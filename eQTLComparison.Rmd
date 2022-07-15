@@ -1,0 +1,1507 @@
+---
+title: "Comparison of eQTL Data Derived from Paired-End and Single-End Sequencing"
+
+author: 'Sam Ardery'
+
+date: "`r Sys.Date()`"
+
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: spacelab
+    code_folding: hide 
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+Similar to expression data, eQTL data relies heavily on accurate
+alignment of the RNA-sequencing reads to the genome. If the alignment is
+inaccurate or insufficient, it can lead to false peaks or a lack of
+peaks that should be present. In this document, eQTL scan data based on
+single-end and paired-end sequencing data is analyzed to compare peak
+identification. Based on the results from the expression data, detailing
+that paired-end sequencing provides a more accurate alignment framework,
+it is expected that the paired-end peak data will provide more accurate
+peaks than the single-end data.
+
+# Methods {.tabset .tabset-pills}
+
+The data used in this analysis is from eQTL scans of paired-end and
+single-end expression matrices. The expression matrices came from PE and
+SE sequencing files of 185 Diversity Outbred mice from [Skelly et. al.,
+2020.](https://pubmed.ncbi.nlm.nih.gov/32795400/) The expression data
+were analyzed in 'Comparison of Expression Data Derived from Paired-End
+and Single-End Sequencing'. The data files required to complete this
+document are eQTL scans with peak chromosomes, LOD scores, and peak
+centimorgan values for each gene ID for both single-end and paired-end
+expression matricies. Also required is the gmap and pmap data files, as
+well as the unique expression gene IDs and biotypes from expression
+analysis.
+
+## **Packages**
+
+This analysis will use the `here` package for data file locating, the
+`tidyverse` package for data manipulation and visualization, the
+`biomaRt` package for the genomic annotation, the `Hmisc` package for
+correlation testing, and the `karyoploteR` and `plotly` packages for
+data visualization. It will also use the `ggpubr` package for figure
+refining. The ensembl used is v91 from December 2017, as that was the
+version used when this data was initially analyzed.
+
+```{r Load-packages setup, include=FALSE}
+library(here)
+library(tidyverse)
+library(biomaRt)
+library(Hmisc)
+library(karyoploteR)
+library(plotly)
+library(ggpubr)
+
+#Creating an ensemble mart is essential to obtain the biotypes of the various filtration of genes.
+ensembl <- useMart(biomart="ensembl",host="http://dec2017.archive.ensembl.org","mmusculus_gene_ensembl") #states a data set for use, in this case, the mouse data set
+```
+
+## **Data**
+
+The data used in this analysis is contains the eQTL peaks, positions,
+and LOD scores for scans performed on the paired-end and single-end
+sequencing data. The data is loaded using the here package. Data is
+loaded as .RData files which contain many files unnecessary for this
+analysis, so they are removed from the environment. The unique
+expression data is also loaded in from a csv. This unique data contains
+the expression estimates and biotype for each unique gene ID.
+
+```{r Load-data}
+###############################
+##Hard-coding -> data loading##
+###############################
+
+#Loading paired-end data
+load("/projects/munger-lab/ArderyProject/eQTLRemap/DO_mESC_paired_eQTL_peaks.RData")
+PEpeaks <- peaks
+PEcmd <- cmd
+rm(peaks, PEcmd, PEDatacmd)
+load(here("MappingScripts", "TruePEforMapping.RData"))
+rm(covar, exprComBat, exprZ, genoprobs, kinship_loco)
+#Loading single-end data
+load(here("MappingScripts", "DO_mESC_eQTL_peaks.RData"))
+SEpeaks <- peaks #renaming peaks to specify sequencing method
+SEcmd <- cmd
+SEDatacmd <- DO185_mESC_emase_m4.cmd
+rm(peaks, cmd, DO185_mESC_emase_m4.cmd, SEDatacmd, SEcmd) #removing peaks variable to avoid confusion
+
+#This data from the expression analysis is loaded for the mapping information it contains for plotting of the genes and eQTLs
+load(here("DataCollection", "DataCollection.RData")) #removing unnecessary data
+
+#Loading in the unique expression data for comparison to the unique eQTL data
+uniquePEexp <- read.csv(file = 'UniquePEexp.csv') #loading PE data
+uniqueSEexp <- read.csv(file = 'UniqueSEexp.csv') #loading SE data
+```
+
+# Results {.tabset .tabset-pills}
+
+Important Note: Scans of PE expression data identified 64,497 peaks,
+whereas scans of SE expression data identified 67,839 peaks. Of these
+peaks, 52,498 are found in both data sets. Some results might be skewed
+by the larger quantity of peaks in SE data. The extra data outside of
+the matched peaks were not found to be biased to any one chromosome.
+
+## **Matched Data** {.tabset .tabset-pills}
+
+We can match the data provided by both sequencing methods by the gene ID
+and chromosome, indicating that both sequencing methods can identify a
+peak for the specified gene on the same chromosome. Analyzing this
+matched data can give insight into how closely related these two data
+sets are based on the significance data and the chromosomal location
+data.
+
+### *LOD score*
+
+The LOD score is an measurement of the evidence that an eQTL is present
+at the specified location and is linked with the specified gene, with a
+higher LOD score indicating stronger evidence. The LOD scores can be
+compared between SE and PE data to show how closely aligned the strength
+of evidence is between the data derived from the two different
+sequencing methods.
+
+```{r Matched-data-analysis}
+#Combining the data by phenotype (gene ID) and peak chromosome allows for the analysis of the peaks that are identical between the two sequencing methods and comparison to the data that is unique. 
+matchedPeaks <- inner_join(SEpeaks, PEpeaks, by = c("phenotype" = "phenotype", "peak_chr" = "peak_chr")) #matching peak data by gene id and chromosome
+matchedPeaks$peak_chr <- factor(matchedPeaks$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing chromosome data
+
+#This plot is displaying the difference between the matched data, as there isn't a direct LOD comparison that can occur between the unique data
+ggplot(matchedPeaks,aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  labs(title = "Comparison of Peak LOD score in Matched Data", x = "Single-End", y = "Paired-End") +
+  theme_pubr()
+```
+
+This data roughly follows the x=y line, which is expected of equally
+effective methods. This shows that the data matched between the two
+sequencing methods is matched in significance, aside from a few outliers
+where SE data shows higher LOD scores than PE, though both are still
+above the significance score of 5, the level of significance that
+indicates that the peak is not extraneous noise, rather a possible eQTL.
+While there may be unique peaks defined by each sequencing method, the
+bulk of the data is similar in general location and significance
+
+#### *Setting stricter LOD thresholds* {.tabset .tabset-pills}
+
+This comparison of chromosome identification can be taken even further
+by created a stricter filter to allow only highly significant data to be
+considered. This is done by restricting the LOD score to be above 6, and
+then also above 7.5. These higher significance levels remove more
+possible noise and further isolates actual eQTLs.
+
+##### *Isolating peaks with an LOD score above 6*
+
+If the LOD score is set filtered so that only values above 6 are
+present, that indicates that there is a 1:1000000 chance that these
+peaks were identified by random chance, or that the peaks identified are
+noise.
+
+```{r Filter-for-signficant-peaks-6}
+PEpeaks %>%
+  filter(lod >= 6) %>% #filtering paired-end data
+  count(peak_chr, name = "PEcount") -> PE6count #counting filtered chromosome frequency
+SEpeaks %>%
+  filter(lod >= 6) %>% #filtering single-end data
+  count(peak_chr, name = "SEcount") -> SE6count #counting filtered chromosome frequency
+PESE6 <- left_join(PE6count, SE6count, by = "peak_chr") #joining count data together
+PESE6 <- mutate(PESE6, Difference = PEcount - SEcount) #creating a difference in chromosome frequency column
+PESE6$peak_chr <- factor(PESE6$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing chromosome frequency
+
+ggplot(PESE6, aes(x = Difference, y = peak_chr)) +
+  geom_col() +
+  labs(title = "Difference in Chromosome Frequency with LOD above 6", x = "Difference", y = "Chromosome") +
+  theme_pubr()
+```
+
+Increasing the LOD score required to be included in the graphic does
+reduce the number of peaks included in the graph but it does not change
+the overall shape of the graph. When the LOD score is set above 6,
+chromosome 16 has more identified peaks in the single-end data but
+chromosome 8 has more peaks identified in the paired-end data.
+
+##### *Isolating peaks with LOD scores above 7.5*
+
+The score of 7.5 was chosen as it further isolates genes that have peaks
+that are significant and potentially has the capability of removing the
+data points where PE and SE are distant in LOD scores and provide the
+set of data where the peaks are of equal significance.
+
+```{r Isolating-significant-peaks-7.5}
+PEpeaks %>%
+  filter(lod >= 7.5) %>% #filtering paired-end data
+  count(peak_chr, name = "PEcount") -> PE75count #counting filtered chromosome frequency
+SEpeaks %>%
+  filter(lod >= 7.5) %>% #filtering single-end data
+  count(peak_chr, name = "SEcount") -> SE75count #counting filtered chromosome frequency
+PESE75 <- left_join(PE75count, SE75count, by = "peak_chr") #joinging count matricies together
+PESE75 <- mutate(PESE75, Difference = PEcount - SEcount) #creating a difference in chromosome frequency column
+PESE75$peak_chr <- factor(PESE75$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing chromosome frequency
+
+ggplot(PESE75, aes(x = Difference, y = peak_chr)) +
+  geom_col() +
+  labs(title = "Difference in Chromosome Frequency with LOD above 7.5", x = "Difference", y = "Chromosome") +
+  theme_pubr()
+```
+
+What is seen when the LOD threshold is set to 7.5 reverses back to
+looking like the original data when the LOD score is required to be
+above 5, aside from the shift of higher quantities of paired-end peaks
+on chromosome 17 instead of on chromosome 16. This shows that even above
+the significance threshold, there are more peaks identified by\
+SE analysis than PE analysis.
+
+### *Interactive plot*
+
+We can filter for the higher LOD scores (above 7.5) and plot scores as a
+direct comparison between PE and SE. The interactive nature of the plot
+allows us to look at specific outliers and determine their gene ID to
+perform further analysis on the specific subset of outliers in matched
+data.
+
+```{r Interactive-plot, message = FALSE, warning=FALSE, fig.width = 10}
+#Isolating matched data where both LOD scores are above 7.5
+BothAbove75 <- ggplot(filter(matchedPeaks, lod.x >= 7.5 & lod.y >= 7.5), aes(x = lod.x, y = lod.y, fill = phenotype)) +
+  geom_point() +
+  labs(title = "Matched Peaks with both LOD scores above 7.5", x = "Single-End", y = "Paired-End") +
+  geom_smooth(show.legend = FALSE) +
+  theme_pubr() +
+  theme(legend.position = "none")
+ggplotly(BothAbove75) #making the plot interactive to isolate gene IDs
+```
+
+The graph shows pretty close alignment to the x=y line, with a few
+visual outliers. By hovering over the outliers, the gene ID can be
+determined and analyzed in the next code chunk.
+
+This chunk is hard coded with the gene IDs that were found to be
+outliers in the previous chunk with this data. If you choose to use
+different data, you much change the information in this chunk to match
+your outliers from the previous plots.
+
+```{r Biotypes-from-interactive-plot}
+#################################
+##Hard-coding -> gene selection##
+#################################
+
+#determining biotypes for outlying data with at least one LOD score above 7.5
+getBM(attributes = c('ensembl_gene_id', 'external_gene_name', 'description', 'gene_biotype'), filters = 'ensembl_gene_id', values = c('ENSMUSG00000103034', 'ENSMUSG00000022940', 'ENSMUSG00000081205', 'ENSMUSG00000030432', 'ENSMUSG00000037805', 'ENSMUSG00000092074', 'ENSMUSG00000044285'), mart = ensembl)
+
+#determining biotypes for outlying data with both LOD scores above 7.5
+getBM(attributes = c('ensembl_gene_id', 'external_gene_name', 'description', 'gene_biotype'), filters = 'ensembl_gene_id', values = c('ENSMUSG00000062683', 'ENSMUSG00000022940', 'ENSMUSG00000103034', 'ENSMUSG00000037805', 'ENSMUSG00000027175', 'ENSMUSG00000030432', 'ENSMUSG00000081205', 'ENSMUSG00000044285', 'ENSMUSG00000092074'), mart = ensembl)
+```
+
+When looking at the gene biotypes, most of them are listed as protein
+coding genes but when looking at the gene description, most are
+described as pseudogenes or predicted gene products. Two of the genes in
+these categories do fall into the pseudogene category. This is in line
+with what was seen in the expression analysis, where data that did not
+match between the sequencing methods was typically associated with
+pseudogenes.
+
+### *Peak Centimorgan*
+
+This chunk shows the difference between the peak centimorgans identified
+from each different sequencing method when the data is matched for the
+phenotype (gene ID) and peak chromosome. The peak centimorgans, if the
+sequencing methods were equally effective, should have differences of or
+close to 0.
+
+```{r Peak-cM-comparison, warning=FALSE}
+#comparing the peak centimorgan of all of the matched data
+ggplot(matchedPeaks, aes(x = peak_cM.x, y = peak_cM.y)) +
+  geom_point() +
+  labs(title = "Comparison of Peak cM in Matched Data", x = "Single-End", y = "Paired-End") +
+  theme_pubr()
+
+#Isolating matched data where the peak centimorgan does not match and creating a difference column
+matchedDifference <- mutate(filter(matchedPeaks, peak_cM.x != peak_cM.y), cMDiff = peak_cM.x - peak_cM.y)
+
+#plotting the distribution of the log of the difference 
+ggplot(matchedDifference, aes(x = log1p(cMDiff))) +
+  geom_histogram(bins = 200) +
+  labs(title = "Difference between cM in single end and paired end matched peaks", x = "Difference", y = "Log of Frequency") +
+  theme_pubr()
+```
+
+The peak centimorgan comparison is relatively close to the x=y line and
+the differences are mostly at or near 0 but there are still a portion of
+data that is not close to the x=y line or at 0, showing that the
+sequencing methods are not equally effective at identifying peaks.
+
+### *LOD Score x Peak Centimorgan*
+
+By subsetting the data by LOD scores, the peak centimorgan can be
+displayed in a range of confidences. It is expected that data that is
+far from the x = y line will have a low LOD score and data near the x =
+y line will have a higher LOD score.
+
+```{r LOD-by-peak-cM-comparison, message=FALSE}
+#filtering the data for high LOD scores (both above 7.5) and assigning the arbitrary label 1
+Both75 <- filter(matchedPeaks, lod.x >= 7.5 & lod.y >= 7.5)
+Both75 <- mutate(Both75, Label = 3)
+#filtering the data for at least one high LOD score (one above 7.5) and assigning the arbitrary label 2
+One75 <- filter(matchedPeaks, (lod.x >= 7.5 & lod.y < 7.5) | (lod.x < 7.5 & lod.y >= 7.5)) 
+One75 <- mutate(One75, Label = 2)
+#filtering the data for low LOD scores (both below 7.5) and assigning the arbitrary label 3
+BothUnder <- filter(matchedPeaks, lod.x < 7.5 & lod.y < 7.5)
+BothUnder <- mutate(BothUnder, Label = 1)
+
+#joining just the data with LOD scores above 7.5 to get a closer look at high LOD scores
+ReJoin <- full_join(Both75, One75)
+ReJoin$Label <- factor(ReJoin$Label, levels = c(3,2))
+Three_Two <- ggplot(ReJoin, aes(x = peak_cM.x, y = peak_cM.y, color = Label)) +
+  geom_point(alpha = 0.3) +
+  labs(title = "Comparison of Peak cM and LOD score", x = "Paired", y = "Single", color = "LOD") +
+  theme_pubr(legend = "right")
+ReJoin$Label <- as.numeric(as.character(ReJoin$Label))
+
+#joining all of the data to display a full comparison of confidence of peaks in peak centimorgan comparison
+ReJoin <- full_join(ReJoin, BothUnder)
+ReJoin$Label <- factor(ReJoin$Label, levels = c(3,2,1))
+Three_Two_One <- ggplot(ReJoin, aes(x = peak_cM.x, y = peak_cM.y, color = Label)) +
+  geom_point(alpha = 0.2) +
+  labs(title = "Comparison of Peak cM and LOD score", x = "Paired", y = "Single", color = "LOD") +
+  theme_pubr(legend = "right")
+ggarrange(Three_Two_One, Three_Two, labels = c("A", "B"), ncol = 1, nrow = 2)
+```
+
+The graphs do show that as predicted, the points with higher LOD scores
+do fall closer to the x = y line than those with lower LOD scores, so
+there is less confidence in peaks that are identified in different
+locations by the two sequencing methods than the peaks identified in the
+same location.
+
+### *Ultra-matching data*
+
+The previous matched data frame only matched the sequencing methods for
+the gene ID and the peak chromosome, indicating that both sequencing
+methods can identify a peak for a specific gene on the same chromosome.
+Creating a more stringent matching framework allows for further
+comparison of the data when all of the peaks are identified as the exact
+same peak between the two sequencing methods by matching for the same
+location on the chromosome (peak centimorgan).
+
+```{r Ultra-match-making}
+#matching data by gene ID, chromosome, and peak centimorgan
+UltraMatched <- inner_join(PEpeaks, SEpeaks, by = c("phenotype" = "phenotype", "peak_chr" = "peak_chr", "peak_cM" = "peak_cM"))
+UltraMatched$peak_chr <- factor(UltraMatched$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing the chromosome data
+
+ggplot(UltraMatched, aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  labs(title = "Ultra-matched (by cM) peaks LOD score comparison", x = "Paired-End", y = "Single-End") +
+  theme_pubr()
+```
+
+When the data is further matched, the LOD scores can be seen to match
+closer to the x=y line, showing that both sequencing methods are able to
+identify the same peaks for a majority of the time and that these are
+significant peaks. This shows that for more general questions, either
+sequencing method could be sufficient.
+
+The ultra matched data can also be analyzed to determine the
+distribution of peaks to see if there are any chromosomes prone to
+having more accurate eQTLs from both sequencing methods.
+
+```{r Peak-cM-of-Ultramatched}
+#plotting the distribution of the peak centimorgans of the ultra-matched data by chromosome
+ggplot(UltraMatched, aes(x = peak_cM, fill = peak_chr)) +
+  geom_histogram(position = "dodge", binwidth = 10) +
+  scale_x_continuous(breaks=seq(0,100,10)) +
+  scale_y_continuous(breaks = seq(0,900,100)) +
+  labs(title = "Peak Centimorgan Distribution", x = "Peak Centimorgan", y = "Frequency", fill = "Chromosome") +
+  theme_pubr()
+```
+
+Larger chromosomes are identifying more peaks that have larger peak
+centimorgan values and smaller chromosomes are identifying peaks that
+have smaller peak centimorgan values. One bar of interest is the very
+large bar in a low peak centimorgan bin that is associated with
+chromosome 3, a relatively large chromosome.
+
+## **Unique Data** {.tabset .tabset-pills}
+
+The analysis performed on the matched data can also be performed on the
+unique data to show the QTLs that can only be determined from data
+derived from each different sequencing method. Data is labeled as unique
+only if the "phenotype" or gene ID and the peak chromosome are
+different, including peaks identified on different chromosomes for the
+same gene. Isolating peaks that are unique to each sequencing method can
+show how different the methods are by displaying the quantity and
+qualities of peaks that appear in each unique data set.
+
+```{r Unique-data-isolation}
+#Isolating peaks unique to paired-end data and factorizing the chromosomes
+uniquePEpeaks <- anti_join(PEpeaks, SEpeaks, by = c("phenotype", "peak_chr"))
+uniquePEpeaks$peak_chr <- factor(uniquePEpeaks$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing chr data
+ggplot(data = uniquePEpeaks, aes(x = peak_chr)) +
+  geom_bar() +
+  labs(title = "Frequency of Chromosome in Peak Identification with Paired End Data", x = "Chromosome", y = "Frequency") +
+  theme_pubr()
+
+#Isolating peaks unique to single-end data and factorizing the chromosomes  
+uniqueSEpeaks <- anti_join(SEpeaks, PEpeaks, by = c("phenotype", "peak_chr"))
+uniqueSEpeaks$peak_chr <- factor(uniqueSEpeaks$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing chr data
+ggplot(uniqueSEpeaks, aes(x = peak_chr)) +
+  geom_bar() +
+  labs(title = "Frequency of Chromosome in Peak Identification with Single End Data", x = "Chromosome", y = "Frequency") +
+  theme_pubr()
+```
+
+It is difficult to compare the data in two different graphs, but the
+shapes of the graphs are different and there are quite a few more peaks
+identified in single-end analysis than in paired-end analysis. This is
+expected as the expression data showed more genes as expressed in SE, so
+a larger amount of eQTLs is expected.
+
+### *LOD Distribution*
+
+The LOD score for each of the unique peaks can be graphed in a
+distribution to show the range of certainties present in the data. It is
+expected that there is a higher frequency of higher LOD scores present
+in the PE data than in the SE data.
+
+```{r Unique-LOD-analysis}
+#plotting unique paired-end peak centimorgan distribution by chromosome
+ggplot(uniquePEpeaks, aes(x = lod, fill = peak_chr)) +
+  geom_histogram(binwidth = 10, position = "dodge") +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+  scale_y_continuous(breaks = seq(0,900,100)) +
+  labs(title = "LOD Distribution Unique to Paired-End", x = "LOD Score", y = "Frequency", fill = "Chromosome") +
+  theme_pubr() 
+
+#plotting unique single-end peak centimorgan distribution by chromosome
+ggplot(uniqueSEpeaks, aes(x = lod, fill = peak_chr)) +
+  geom_histogram(binwidth = 10, position = "dodge") +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+  scale_y_continuous(breaks = seq(0,900,100)) +
+  labs(title = "LOD Distribution Unique to Single-End", x = "LOD Score", y = "Frequency", fill = "Chromosome") +
+  theme_pubr()
+```
+
+Most of the LOD scores for both sequencing method lie under 10, which is
+to be expected. Something unexpected is the larger variety of LOD scores
+present in single-end analysis. The SE graphs shows LOD scores that
+extend up to the 50 score bin, whereas the PE graph doesn't pass the 40
+score bin. This could be indicative of false LOD scores presented for
+false peaks created by false alignments, but the increase in range of
+score is something of note.
+
+### *Peak Centimorgan Distribution*
+
+The peak centimorgan distribution for each unique set of data can be
+plotted to determine if there are specific locations where more peaks
+gather for one data set than the other.
+
+```{r Unique-cM-analysis}
+#plotting unique paired-end peak centimorgan distribution by chromosome
+ggplot(uniquePEpeaks, aes(x = peak_cM, fill = peak_chr)) +
+  geom_histogram(binwidth = 10, position = "dodge") +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+  scale_y_continuous(breaks = seq(0,900,100)) +
+  labs(title = "Peak Centimorgan Distribution Unique to Paired-End", x = "Peak Centimorgan", y = "Frequency", fill = "Chromosome") +
+  theme_pubr() 
+
+#plotting unique single-end peak centimorgan distribution by chromosome
+ggplot(uniqueSEpeaks, aes(x = peak_cM, fill = peak_chr)) +
+  geom_histogram(binwidth = 10, position = "dodge") +
+  scale_x_continuous(breaks = seq(0,100,10)) +
+  scale_y_continuous(breaks = seq(0,900,100)) +
+  labs(title = "Peak Centimorgan Distribution Unique to Single-End", x = "Peak Centimorgan", y = "Frequency", fill = "Chromosome") +
+  theme_pubr()
+```
+
+These graphs follow a similar pattern as the matched data but it is of
+note that in unique single end data, more larger peak centimorgan values
+are present while in paired end data, more smaller peak centimorgan
+values are present.
+
+To get a closer look at the distribution, the data can be faceted by
+chromosome as opposed to colored by chromosome so that each chromosome's
+data can be looked at individually so clearer conclusions can be made.
+
+```{r Unique-cM-analysis-by-chromosome}
+#plotting unique paired-end peak centimorgan distribution faceted by chromosome
+ggplot(uniquePEpeaks, aes(peak_cM)) +
+  geom_histogram(binwidth = 10) +
+  facet_wrap(~peak_chr) +
+  labs(title = "Peak Centimorgan Distribution Unique to Paired-End", x = "Peak Centimorgan", y = "Frequency") +
+  theme_pubr()
+
+#plotting unique single-end peak centimorgan distribution faceted by chromosome
+ggplot(uniqueSEpeaks, aes(peak_cM)) +
+  geom_histogram(binwidth = 10) +
+  facet_wrap(~peak_chr) +
+  labs(title = "Peak Centimorgan Distribution Unique to Single-End", x = "Peak Centimorgan", y = "Frequency") +
+  theme_pubr()
+```
+
+In the paired end data, a large number of peaks are found on the low end
+of chromosomes 13 and 15 and on the higher end of chromosome 11. In the
+single-end data, a large number of peaks are found on the high end of
+chromosomes 2, 4, 9, and 17 and on the lower end of chromosomes 13 and
+15, similar to PE data.
+
+## **Universe Data**
+
+By combining all of the data into one, we can compare directly the
+number of peaks identified by each sequencing method. This displays a
+general overview of the universal results by peak chromosome.
+
+```{r Universe-data-creation}
+#creating count matrices for each subset of data 
+ChromosomesPE <- count(filter(uniquePEpeaks, lod > 7.5), peak_chr, name = "PE") #PE
+ChromosomesSE <- count(filter(uniqueSEpeaks, lod > 7.5), peak_chr, name = "SE") #SE
+ChromosomesMA <- count(filter(matchedPeaks, lod.x > 7.5 & lod.y > 7.5), peak_chr, name = "Matched") #Matched
+
+#joining all of the counts together and pivoting so that the subset  is a column, not just the column names
+Chromosomes <- left_join(ChromosomesPE, ChromosomesSE, by = "peak_chr")
+Chromosomes <- left_join(Chromosomes, ChromosomesMA, by = "peak_chr")
+Chromosomes <- pivot_longer(data = Chromosomes,
+                            cols = 2:4,
+                            names_to = "Subset",
+                            values_to = "Counts")
+groupColors <- c(Matched = "gray65", PE = "coral2", SE = "cyan3")
+#Plotting the data all together so it can easily be compared 
+ggplot(Chromosomes, aes(x = peak_chr, y = Counts, fill = Subset)) +
+  geom_col(position = "dodge") +
+  labs(title = "Frequency of Chromosome Peak Identification", x = "Chromosome", y = "Frequency", fill = "Subset") +
+  theme_pubr() +
+  scale_fill_manual(values = groupColors) +
+  scale_color_manual(values = groupColors)
+```
+
+Both sequencing methods are showing similar patterns of chromosome
+assignment with a few differences in the exact frequency, paired-end
+data tending to have a lower frequency than single-end data.
+
+## **Biotype Data** {.tabset .tabset-pills}
+
+Similar to expression analysis, we can determine the biotypes for all of
+the data sets and use that to analyze what types of genes are present at
+higher levels in each group. This is especially useful to determine
+which types of genes are more prevalent in each of the unique data sets.
+
+### *Matched Data*
+
+Determining and analyzing matched biotypes should give a general idea of
+what kinds of genes have peaks that are identifiable through data from
+both sequencing methods. This will also provide baseline to compare the
+unique data against.
+
+```{r Biotype-data-creation, fig.width = 10, fig.height = 10}
+#Determining biotypes and renaming the biotype column to allow for integration of the biotypes with the rest of the peak data
+matchedBiotypes <- getBM(attribute = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = matchedPeaks$phenotype, mart = ensembl)
+#matchedBiotypes <- rename(matchedBiotypes, phenotype = ensembl_gene_id)
+MA_Biotypes <- inner_join(matchedPeaks, matchedBiotypes, by = c("phenotype" = "ensembl_gene_id"))
+
+#plotting the LOD score comparison faceted by biotype
+ggplot(MA_Biotypes, aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  facet_wrap(~gene_biotype) +
+  labs(title = "LOD Score Comparison by Biotype: Matched by GeneID and Chromosome", x = "Paired-End", y = "Single-End") +
+  theme_pubr()
+
+#Determining the ultra matched biotypes and renaming the biotype column to allow for integration into the peak data
+UMBiotypes <- getBM(attribute = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = UltraMatched$phenotype, mart = ensembl )
+#UMBiotypes <- rename(UMBiotypes, phenotype = ensembl_gene_id)
+UM_Biotypes <- inner_join(UltraMatched, UMBiotypes, by =  c("phenotype" = "ensembl_gene_id"))
+
+#plotting the LOD score comparison faceted by biotype
+ggplot(UM_Biotypes, aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  facet_wrap(~gene_biotype) +
+  labs(title = "LOD Score Comparison by Biotype:Matched by GeneID, Chromosome, and Peak cM", x = "Paired-End", y = "Single-End") +
+  theme_pubr()
+```
+
+Most of the matched data is found in protein coding genes, which is to
+be expected, with a few other types of genes in the pseudogene and RNA
+gene categories which is also to be expected.
+
+We can separate the biotypes into four larger groups, protein coding
+genes, pseudogenes, RNA genes, and other biotypes. By separating these
+categories, we can show the differences between sequencing methods for
+these categories of similar genomic features within the matched data
+set.
+
+```{r Biotype-category-fitering, fig.width = 10, fig.height = 10}
+#filtering for pseudogenes
+pseudogenes <- filter(MA_Biotypes, str_detect(gene_biotype, "pseudogene"))
+#filtering for protein coding genes
+proteins <- filter(MA_Biotypes, gene_biotype == "protein_coding")
+#filtering for RNA based genes
+rna <- filter(MA_Biotypes, str_detect(gene_biotype, "RNA")) 
+#filtering for all other categories
+other <- filter(MA_Biotypes, str_detect(gene_biotype, "pseudogene") == FALSE & str_detect(gene_biotype, "protein_coding") == FALSE & str_detect(gene_biotype, "RNA") == FALSE)
+#plotting all four categories
+Pseudo <- ggplot(pseudogenes, aes(x = lod.y, y = lod.x)) +
+            geom_point() +
+            labs(title = "LOD Score - Pseudogenes", x = "Single-End", y = "Paired-End") +
+            theme_pubr()
+Prot <- ggplot(proteins, aes(x = lod.y, y = lod.x)) +
+            geom_point() +
+            labs(title = "LOD Score - Protein Coding Genes", x = "Single-End", y = "Paired-End") +
+            theme_pubr()
+SmRNA <- ggplot(rna, aes(x = lod.y, y = lod.x)) +
+            geom_point() +
+            labs(title = "LOD Score - Small RNA Genes", x = "Single-End", y = "Paired-End") +
+            theme_pubr()
+Other <- ggplot(other, aes(x = lod.y, y = lod.x)) +
+            geom_point() +
+            labs(title = "LOD Score - Other Biotypes", x = "Single-End", y = "Paired-End") +
+            theme_pubr()
+#arranging all four plots into one figure
+ggarrange(Prot, Pseudo, SmRNA, Other, labels = c("A", "B", "C", "D"), ncol = 2, nrow = 2)
+```
+
+The protein coding graph shows more points that have higher values in
+the PE data set associated with lower values in the SE data set. This
+shows that the PE data has a higher confidence in the peaks identified
+for those genes than SE data. The other categories show variety in the
+combination of scores, indicating the presence of some false peaks and
+the lack of some true peaks in one of the data sets for the pseudogene,
+RNA gene, and other gene categories.
+
+### *Unique Data* {.tabset .tabset-pills}
+
+We can look at similar information in the unique data set. The biotypes
+of the unique data will show us what genomic features have assigned
+peaks in each of the sequencing methods. It is predicted that protein
+coding genes will have more uniquely identified peaks in the PE data and
+the pseudogene, RNA gene, and other gene categories will have more
+uniquely identified peaks in the SE data.
+
+```{r Unique-biotype-analysis, warning=FALSE, message=FALSE, fig.width = 10, fig.height = 10}
+#Determining the biotypes and plotting the frequency of each biotype in paired-end data 
+UPEBiotypes <- getBM(attribute = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = uniquePEpeaks$phenotype, mart = ensembl)
+p <- ggplot(count(UPEBiotypes, gene_biotype), aes(x = n, y = gene_biotype)) +
+  geom_col() +
+  labs(title = "Biotypes Unique to Paired End", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+
+#Determining the biotypes and plotting the frequency of each biotype in single-end data
+USEBiotypes <- getBM(attribute = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = uniqueSEpeaks$phenotype, mart = ensembl)
+s<- ggplot(count(USEBiotypes, gene_biotype), aes(x = n, y = gene_biotype)) +
+  geom_col() +
+  labs(title = "Biotypes Unique to Single End", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+
+ggarrange(p, s, labels = c("A", "B"), ncol = 1, nrow = 2)
+```
+
+Paired-end data shows a large quantity of peaks for genes defined to be
+protein coding. These are peaks for protein coding genes that are not
+able to be identified by single-end sequencing. While there were some
+protein-coding genes where peaks were found exclusively in single-end
+analysis, there are also a large number of peaks that are identified for
+pseudogenes and RNA based gene categories, potentially creating false
+peaks or large amounts of background noise.
+
+Further analysis of the unique biotypes includes displaying the
+distribution of the LOD score on a log scale.
+
+```{r Biotype-uniques-by-LOD, message=FALSE, warning=FALSE, fig.width = 10, fig.height = 10}
+#renaming the gene id column to allow for integration into the peak data and creation of a log of the LOD score column for paired-end data
+UPEBiotypes <- rename(UPEBiotypes, phenotype = ensembl_gene_id) #this line must be commented out after one run, otherwise an error will arise
+PEQTLBiotypes <- inner_join(uniquePEpeaks, UPEBiotypes, by = "phenotype")
+PEQTLBiotypes <- mutate(PEQTLBiotypes, LogLOD = log1p(lod))
+#plotting the LOD score distribution faceted by biotype without the protein coding gene category
+ggplot(PEQTLBiotypes, aes(x = LogLOD)) +
+  geom_density() +
+  facet_wrap(~gene_biotype) +
+  labs(title = "LOD Score Distribution of Paired-End Peaks by Biotype", x = "LOD Score", y = "Frequency") +
+  theme_pubr()
+
+#renaming the gene id column to allow for integration into the peak data and creation of a log of the LOD score column for single-end data
+USEBiotypes <- rename(USEBiotypes, phenotype = ensembl_gene_id) #this line must be commented out after one run, otherwise an error will arise
+SEQTLBiotypes <- inner_join(uniqueSEpeaks, USEBiotypes, by = "phenotype")
+SEQTLBiotypes <- mutate(SEQTLBiotypes, LogLOD = log1p(lod))
+#plotting the LOD score distribution faceted by biotype without the protein coding gene category
+ggplot(SEQTLBiotypes, aes(x = LogLOD)) +
+  geom_histogram() +
+  facet_wrap(~gene_biotype) +
+  labs(title = "LOD Score Distribution of Paired-End Peaks by Biotype", x = "LOD Score", y = "Frequency") +
+  theme_pubr()
+```
+
+While most of the distributions are difficult to see, many of the
+pseudogene categories in the single-end data have lower LOD scores,
+while they are not largely present in the paired-end data.
+
+For an overall analysis of biotypes unique to each sequencing method,
+the count matrices can be joined by all of the biotypes. Then the
+difference in chromosome frequency can be identified. This can be
+faceted by biotype or peak chromosome. This will show if there are any
+genomic features on any specific chromosome that are prone to the
+difference in alignment between the sequencing methods.
+
+```{r Unique-biotype-frequency-difference, message = FALSE, fig.width = 10, fig.height = 10}
+#grouping data by biotype and creating count matrices by biotype
+PEQTLBiotypes %>%
+  filter(lod > 7.5) %>%
+  group_by(gene_biotype) %>%
+  count(peak_chr, name = "PE") -> Pair
+SEQTLBiotypes %>%
+  filter(lod > 7.5) %>%
+  group_by(gene_biotype) %>%
+  count(peak_chr, name = "SE") -> Sing
+
+#joining the count matrices together and adding a difference column
+PS <- full_join(Pair, Sing, by = c("gene_biotype", "peak_chr"))
+PS$PE <- replace_na(PS$PE, 0) #replacing the NAs with 0 for clean plotting
+PS$SE <- replace_na(PS$SE, 0)
+PS <- mutate(PS, diff = (PE-SE))
+
+
+#plotting the difference by peak chromosome and faceting by biotype
+ggplot(PS, aes(x = diff, y = peak_chr)) +
+  geom_col() +
+  facet_wrap(~gene_biotype, scales = "free") +
+  labs(title = "Difference in Chromosome Frequency Per Biotype", x = "Difference in Frequency", y = "Chromosome") +
+  theme_pubr()
+
+#plotting the difference by peak chromosome and faceting by chromosome
+ggplot(PS, aes(x = diff, y = gene_biotype)) +
+  geom_col() +
+  facet_wrap(~peak_chr, scales = "free") +
+  theme_pubr()
+```
+
+This shows what the previous data has also been showing, that aside from
+the protein coding category, SE data identified more peaks than PE data
+and those peaks are associated with a wide array of genomic features but
+are especially present in the pseuodgene category. The protein coding
+category on the other hand shows a larger quantity of peaks identified
+by PE data, indicating that SE data is not able to identify certain
+peaks for protein coding genes, possibly caused by the lack of reads
+aligning to those genes.
+
+In this section, the difference between PE and SE are determined in the
+four overarching biotype categories: pseudogenes, protein coding genes,
+RNA genes, and other categories. For each of these categories, the data
+is filtered out and grouped by the peak chromosome so that we can see
+the difference per chromosome.Then the difference on each chromosome is
+determined and plotted on a bar graph where the larger the number is
+(more positive), the more peaks were associated with paired-end and the
+more negative the number is, the more peaks were associated with
+single-end.
+
+```{r Biotype-category-by-chromosome, message = FALSE, warning=FALSE}
+groupColors <- c("TRUE" = "coral2", "FALSE" = "cyan3")
+#filtering for pseudogenes
+PS %>%
+  filter(str_detect(gene_biotype, "pseudogene")) %>%
+  group_by(peak_chr) %>%
+  summarise(Diff = sum(diff)) %>%
+  mutate(pos = Diff > 0) %>%
+  ggplot(aes(x = Diff, y = peak_chr, fill = pos)) +
+    geom_col(show.legend = FALSE) +
+    theme_pubr(base_size = 18) +
+    scale_fill_manual(values = groupColors) +
+    labs(title = "Psuedogene", x = "Difference", y = "Chromosome") -> diffpseudo
+
+#filtering for protein coding genes
+PS %>%
+  filter(str_detect(gene_biotype, "protein_coding")) %>%
+  group_by(peak_chr) %>%
+  summarise(Diff = sum(diff)) %>%
+  mutate(pos = Diff > 0) %>%
+  ggplot(aes(x = Diff, y = peak_chr, fill = pos)) +
+    geom_col(show.legend = FALSE) +
+    theme_pubr(base_size = 18) +
+    scale_fill_manual(values = groupColors) +
+    labs(title = "Protein Coding", x = "Difference", y = "Chromosome") -> diffprot
+
+#filtering for RNA genes 
+PS %>%
+  filter(str_detect(gene_biotype, "pseudogene") == FALSE & str_detect(gene_biotype, "protein_coding") == FALSE) %>%
+  group_by(peak_chr) %>%
+  summarise(Diff = sum(diff)) %>%
+  mutate(pos = Diff > 0) %>%
+  ggplot(aes(x = Diff, y = peak_chr, fill = pos)) +
+    geom_col(show.legend = FALSE) +
+    theme_pubr(base_size = 18) +
+    scale_fill_manual(values = groupColors) +
+    labs(title = "Small RNA", x = "Difference", y = "Chromosome") -> diffrna
+
+#arranging all of the plots into one figure
+ggarrange(diffprot, diffpseudo, diffrna, ncol = 3, nrow = 1)
+```
+
+Many of the pseudogene categories have more peaks identified with
+single-end data while the protein coding category has more peaks
+identified in paired end data. This is what we expected to see based on
+the results from the expression data.
+
+#### *Protein Coding Genes*
+
+We can directly compare the number of protein coding genes in each data
+set and plot the difference in quantity against each chromosome to look
+closer at this biotype.
+
+```{r Protein-coding-genes-by-chromosome}
+#filtering for protein coding genes and getting a chromosome count for paired-end and single-end data
+PEQTLBiotypes %>%
+  filter(gene_biotype == "protein_coding") %>%
+  count(peak_chr, name = "PCount") -> PEProteins
+SEQTLBiotypes %>%
+  filter(gene_biotype == "protein_coding") %>%
+  count(peak_chr, name = "SCount") -> SEProteins
+
+#joining the count matricies and determining the difference between the counts, as well as factorizing the chromosomes. 
+PESEProt <- inner_join(PEProteins, SEProteins, by = "peak_chr")
+PESEProt <- mutate(PESEProt, Diff = PCount - SCount) #adding a difference column
+PESEProt$peak_chr <- factor(PESEProt$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+#plotting the difference against each chromosome
+ggplot(PESEProt, aes(x = Diff, y = peak_chr)) +
+  geom_col() +
+  labs(title = "Difference in Peaks for Protein Coding Genes", x = "Difference", y = "Frequency") +
+  theme_pubr()
+```
+
+When only protein coding genes are isolated, most of the data is
+uniquely identified by paired-end sequencing.
+
+#### *Pseudogenes*
+
+We can do the same with pseudogenes, allowing us to look closer at the
+quantities of pseudogenes per chromosome defined by each sequencing
+method.
+
+```{r Pseudogenes-by-chromosome}
+#filtering for pseudogenes and getting a chromosome count for paired-end and single-end data
+PEQTLBiotypes %>%
+  filter(str_detect(gene_biotype, "pseudogene")) %>%
+  count(peak_chr, name = "PCount") -> PEPseudo
+SEQTLBiotypes %>%
+  filter(str_detect(gene_biotype, "pseudogene")) %>%
+  count(peak_chr, name = "SCount") -> SEPseudo
+
+#joining the count matricies and determining the difference between the counts, as well as factorizing the chromosomes. 
+PESEPseudo <- inner_join(PEPseudo, SEPseudo, by = "peak_chr")
+PESEPseudo <- mutate(PESEPseudo, Diff = PCount - SCount) #adding a difference column
+PESEPseudo$peak_chr <- factor(PESEPseudo$peak_chr, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+#plotting the difference against each chromosome
+ggplot(PESEPseudo, aes(x = Diff, y = peak_chr)) +
+  geom_col() +
+  labs(title = "Difference in Peaks for Pseudogenes", x = "Difference", y = "Frequency") +
+  theme_pubr()
+```
+
+This further shows the increased peak identification associated with
+pseudogenes in SE data.
+
+## **Karyotype Plot** {.tabset .tabset-pills}
+
+Plotting the peak data against the mouse karyotype allows for the
+visualization of the peaks. The karyoplotR package is used to create a
+karyoplot that has all of the peak base pair values. Quite of bit of
+data manipulation is required to use the karyotype plotting package but
+when the data is prepared, we can see where peaks are gathering. In this
+analysis, the data will first be separated and labels will be assigned
+based on LOD score. In order to fit with the package specifications,
+matched data where both LOD scores are above 7.5 will have a score of
+0.9, data where at only one LOD score is above 7.5 will have a score of
+0.6, and data where both LOD scores are below 7.5 will have a score of
+0.3. This means that the farther the point is from the ideogram, the
+higher the LOD score.
+
+This function allows for the conversion of centimorgan data into
+basepair data so it can be plotted against the karyotype. This code was
+provided by Dr. Selcan Aydin of the Munger Lab at the Jackson
+Laboratory.
+
+```{r Chromosome-comparison-plot}
+chroms <- c(as.character(1:19), "X") #creating a character vector of the chromosomes
+interp_bp <- function(df) { #input for this function is a data frame (must contain the peak chromosome and peak centimorgan)
+  df <- arrange(df, peak_chr, peak_cM) #arranging the peak chromosome and the peak centimorgan from the input data frame
+  peak_gpos <- dplyr::select(df, peak_chr, peak_cM) #isolating the peak chromosome and centimorgan
+  chr <- peak_gpos$peak_chr #isolating the peak chromosomes
+  f <- factor(chr, chroms) #factorizing the chromosomes
+  peak_gcoord_list <- split(peak_gpos$peak_cM, f) #splits the peak cM data based on the chromosomes
+  peak_pcoord_list <- qtl2::interp_map(peak_gcoord_list, gmap, pmap) #determines the actual bp location
+  df$interp_bp_peak <- unsplit(peak_pcoord_list, f) #unsplits the data into a new column
+  df #prints your new data frame
+}
+```
+
+### *Matched data*
+
+The analysis will first be performed using matched data to see where
+both sequencing methods would gather larger numbers of peaks. This will
+give an example for comparison of the unique data as to what a
+representative plot should look like. The data first must be separated
+so that LOD score levels can be applied and then joined back together.
+
+```{r Matched-karyotype-setup, message = FALSE, fig.width = 10, fig.height = 10}
+#filtering the data for high LOD scores (both above 7.5) and assigning the arbitrary label 1
+UBoth75 <- filter(UltraMatched, lod.x >= 7.5 & lod.y >= 7.5)
+UBoth75 <- mutate(UBoth75, Label = 0.9)
+#filtering the data for at least one high LOD score (one above 7.5) and assigning the arbitrary label 2
+UOne75 <- filter(UltraMatched, (lod.x >= 7.5 & lod.y < 7.5) | (lod.x < 7.5 & lod.y >= 7.5)) 
+UOne75 <- mutate(UOne75, Label = 0.6)
+#filtering the data for low LOD scores (both below 7.5) and assigning the arbitrary label 3
+UBothUnder <- filter(UltraMatched, lod.x < 7.5 & lod.y < 7.5)
+UBothUnder <- mutate(UBothUnder, Label = 0.3)
+#joining all of the data together
+UReJoin <- full_join(UBoth75, UOne75)
+UReJoin <- full_join(UReJoin, UBothUnder)
+```
+
+Once the data has been organized and labels are assigned, it can then be
+plotted.
+
+```{r Matched-karyotype-creation, fig.width = 10, fig.height = 10}
+#converting the peak centiMorgan values to base pairs and adding the prefix "chr" to each chromosome number
+MAbp <- interp_bp(UReJoin)
+MAbp <- mutate(MAbp, chr = paste("chr", peak_chr, sep = ""))
+
+#plotting the karyotype
+maKP <- plotKaryotype(genome = "mm10", plot.type = 1, main = "Matched Peak Distribution")
+#adding a data panel to contain the matched points
+kpDataBackground(maKP, col = "gray")
+#adding the matched data points
+kpPoints(maKP, chr = as.character(MAbp$chr), x = as.integer(MAbp$interp_bp_peak), y = MAbp$Label, col = "darkblue")
+```
+
+Most of the data points are on the 0.3 line, meaning that both LOD
+scores were below 7.5. The data that does contain LOD scores above 7.5
+is very sporadic. This plot shows the representative spread throughout
+the genome which is what we expect to see in the unique data if there
+are not physical features that impact mis-alignment on each chromosome.
+
+### *Unique data*
+
+We can then perform this same analysis on the unique data, allowing us
+to see if the spread throughout the genome is the same as in the matched
+data. Similar to the matched data, the unique data must first be
+separated to assign LOD score labels and then re-joined together for
+plotting.
+
+```{r Unique-karyotype-setup, message = FALSE}
+#Paired-end
+#filtering the data for high LOD scores (both above 7.5) and assigning the arbitrary label 1
+PBoth75 <- filter(uniquePEpeaks, lod >= 7.5)
+PBoth75 <- mutate(PBoth75, Label = 0.9)
+#filtering the data for at least one high LOD score (one above 7.5) and assigning the arbitrary label 2
+POne75 <- filter(uniquePEpeaks, lod < 7.5 & lod >= 6) 
+POne75 <- mutate(POne75, Label = 0.6)
+#filtering the data for low LOD scores (both below 7.5) and assigning the arbitrary label 3
+PBothUnder <- filter(uniquePEpeaks, lod < 6)
+PBothUnder <- mutate(PBothUnder, Label = 0.3)
+#joining the data together
+PReJoin <- full_join(PBoth75, POne75)
+PReJoin <- full_join(PReJoin, PBothUnder)
+
+#Single-end
+#filtering the data for high LOD scores (both above 7.5) and assigning the arbitrary label 1
+SBoth75 <- filter(uniqueSEpeaks, lod >= 7.5)
+SBoth75 <- mutate(SBoth75, Label = 0.9)
+#filtering the data for at least one high LOD score (one above 7.5) and assigning the arbitrary label 2
+SOne75 <- filter(uniqueSEpeaks, lod < 7.5 & lod >= 6) 
+SOne75 <- mutate(SOne75, Label = 0.6)
+#filtering the data for low LOD scores (both below 7.5) and assigning the arbitrary label 3
+SBothUnder <- filter(uniqueSEpeaks, lod < 6)
+SBothUnder <- mutate(SBothUnder, Label = 0.3)
+#joining the data together
+SReJoin <- full_join(SBoth75, SOne75)
+SReJoin <- full_join(SReJoin, SBothUnder)
+```
+
+The data can then be combined and plotted onto one ideogram, where the
+the PE data is on the top of each chromosome and the SE data is on the
+bottom.
+
+```{r Unique-karyotype-creation}
+#determining base pair values from centimorgan data
+UP <- interp_bp(PReJoin)
+US <- interp_bp(SReJoin)
+#adding the prefix "chr" to each chromosome number
+UP <- mutate(UP, chr = paste("chr", peak_chr, sep = ""))
+US <- mutate(US, chr = paste("chr", peak_chr, sep = ""))
+
+#plotting the data together onto one graph. Paired-end data will be above each ideogram and single-end data will be below
+ukp <- plotKaryotype(genome = "mm10", plot.type = 2, main = "Unique Peak Distribution")
+#adding data panels for both sequencing methods
+kpDataBackground(ukp, data.panel = 1, col = "#FFAACB")
+kpDataBackground(ukp, data.panel = 2, col = "#AACBFF")
+#adding labels to each of the data panels to easily identify paired-end and single-end data
+kpAddLabels(ukp, data.panel = 1, labels = "Paired", r0 = 0, r1 = 0.5)
+kpAddLabels(ukp, data.panel = 2, labels = "Single", r0 = 0, r1 = 0.5)
+#adding base numbers to the ideograms
+kpAddBaseNumbers(ukp)
+#adding the data to the data panels
+#paired-end data is above each ideogram in a blue data panel
+kpPoints(ukp, data.panel = 1, chr = as.character(UP$chr), x = as.integer(UP$interp_bp_peak), y = UP$Label, col = "black")
+#single-end data is below each ideogram in a pink data panel
+kpPoints(ukp, data.panel = 2, chr = as.character(US$chr), x = as.integer(US$interp_bp_peak), y = US$Label, col = "black")
+```
+
+Similar to the matched data, most of the data points fall below the 7.5
+LOD threshold in the 0.3 label group, with points with LOD scores above
+7.5 happening in various locations in the genome and not gathering in
+any common chromosomal locations.
+
+## **Peak Location x Gene Midpoint** {.tabset .tabset-pills}
+
+By determining the gene location and comparing that to the peak
+location, we can determine if the QTLs are cis- or trans-QTLs, as well
+as determine possible QTL hotspots. The actions performed to get this
+plot will be the same for every data set so will only be commented and
+described once.
+
+### *Matched Peaks*
+
+We can look at the matched peaks to get an idea of the layout of cis and
+trans eQTLs that both sequencing methods identify. This, similar to the
+karyoplot graph will give us an example to compare the unique data to.
+This data is faceted by chromosome, so each graph will display all of
+the eQTL locations for genes found to have eQTLs on each chromosome.
+Because of this, there may be some points that extend past the length of
+the chromosome, as that is a distal eQTL that is on a longer chromosome.
+
+```{r Matched-peaks-by-gene-location}
+#Matched Total
+Mpeaksbp <- interp_bp(UltraMatched) #cM to bp conversion
+Mstart_end <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = Mpeaksbp$phenotype, mart = ensembl) #start and end position acquisition 
+MpeaksXlocation <- inner_join(Mpeaksbp, Mstart_end, by = c("phenotype" = "ensembl_gene_id")) #adding start/end to data 
+MpeaksXlocation$chromosome_name <- factor(MpeaksXlocation$chromosome_name, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+MpeaksXlocation %>%
+  filter(lod.x >= 7.5 & lod.y >= 7.5) %>% 
+  na.omit() %>%
+  mutate(gene_length = abs(end_position - start_position)) %>%
+  mutate(midpoint = (start_position + (gene_length / 2 ))) %>%
+  mutate(gene_mbp = midpoint / 1000000) %>%
+  mutate(peak_mbp = interp_bp_peak / 1000000) %>%
+  ggplot(aes(x = peak_mbp, y = gene_mbp, col = chromosome_name)) +
+    geom_point(cex = 1) +
+    facet_wrap(~peak_chr) +
+    labs(title = "Matched Peak and Gene Location", x = "Peak Location (Mbp)", y = "Gene Location (Mbp)", col = "Gene Chromosome") +
+    theme_pubr(legend = "right")
+```
+
+This data shows a large quantity of cis-eQTLs as well as interspersed
+trans eQTLs with eQTL hotspots in locations identified in previous
+literature.
+
+### *Unique Peaks*
+
+We can then look at the unique data to see how it differs from the
+matched data to see if there is are genomic regions where peaks are not
+being identified for one of the sequencing methods.
+
+```{r Unique-peaks-by-gene-location}
+#Unique Paired-End Total
+UPEpeaksbp <- interp_bp(uniquePEpeaks) #cM to bp conversion
+UPEstart_end <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = UPEpeaksbp$phenotype, mart = ensembl) #start and end acquisition
+UPEpeaksXlocation <- inner_join(UPEpeaksbp, UPEstart_end, by = c("phenotype" = "ensembl_gene_id")) #adding start/end to data
+UPEpeaksXlocation$chromosome_name <- factor(UPEpeaksXlocation$chromosome_name, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+UPEpeaksXlocation %>%
+  filter(lod >= 7.5) %>%
+  na.omit() %>%
+  mutate(gene_length = abs(end_position - start_position)) %>%
+  mutate(midpoint = (start_position + (gene_length / 2 ))) %>%
+  mutate(gene_mbp = midpoint / 1000000) %>%
+  mutate(peak_mbp = interp_bp_peak / 1000000) %>%
+  ggplot(aes(x = peak_mbp, y = gene_mbp, col = chromosome_name)) +
+    geom_point(cex = 1) +
+    facet_wrap(~peak_chr) +
+    labs(title = "Unique Paired-End Peak and Gene Location", x = "Peak Location (Mbp)", y = "Gene Location (Mbp)", col = "Gene Chromosome") +
+    theme_pubr(legend = "right")
+
+#Unique Single-End Total
+USEpeaksbp <- interp_bp(uniqueSEpeaks) #cM to bp conversion
+USEstart_end <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = USEpeaksbp$phenotype, mart = ensembl) #start/end acquisition
+USEpeaksXlocation <- inner_join(USEpeaksbp, USEstart_end, by = c("phenotype" = "ensembl_gene_id")) #adding start/end to data
+USEpeaksXlocation$chromosome_name <- factor(USEpeaksXlocation$chromosome_name, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+USEpeaksXlocation %>%
+  filter(lod >= 7.5) %>%
+  na.omit() %>%
+  mutate(gene_length = abs(end_position - start_position)) %>%
+  mutate(midpoint = (start_position + (gene_length / 2 ))) %>%
+  mutate(gene_mbp = midpoint / 1000000) %>%
+  mutate(peak_mbp = interp_bp_peak / 1000000) %>%
+  ggplot(aes(x = peak_mbp, y = gene_mbp, col = chromosome_name)) +
+    geom_point(cex = 1) +
+    facet_wrap(~peak_chr) +
+    labs(title = "Unique Single-End Peak and Gene Location", x = "Peak Location (Mbp)", y = "Gene Location (Mbp)", col = "Gene Chromosome") +
+    theme_pubr(legend = "right")
+```
+
+By analyzing the data purely visually, it appears that single-end data
+just identifies more points than paired-end data, possibly identifying
+more noise. There aren't any potential hotspots that are appearing in
+one set of data and not in the other but there is quite a bit more data
+in single-end sets. The matched data clearly shows the hotspots that are
+identified in each of the sequencing methods. The unique paired-end data
+doesn't show any gathering of points that isn't present in the matched
+data and the points are pretty variable throughout the genome. The
+unique single-end data shows a similar pattern, just with more points
+appearing on each graph.
+
+We can also determine the peaks that are identified as cis or local to see if there is any change in LOD score between the two sequencing methods when it comes to cis eQTLs that they are both able to detect. 
+```{r}
+matchedBiotypes <- rename(matchedBiotypes, phenotype = ensembl_gene_id)
+CisMatch <- dplyr::select(MpeaksXlocation, c(1,4,7,10,11))
+CisMatch <- inner_join(CisMatch, matchedBiotypes, by = "phenotype")
+
+CisMatch %>%
+  filter(str_detect(gene_biotype, "protein_coding")) %>%
+  mutate(gene_mbp = start_position / 1000000) %>%
+  mutate(peak_mbp = interp_bp_peak / 1000000) %>%
+  filter((gene_mbp - peak_mbp) < 5 & (gene_mbp - peak_mbp) > -5) %>%
+  ggplot(aes(x = lod.y, y = lod.x)) +
+    geom_point() +
+    theme_pubr(base_size = 18) +
+    geom_smooth(method = "lm") +
+    stat_regline_equation(size = 8) +
+    stat_cor(label.x = 5, label.y = 53, size = 8) +
+    labs(title = "LOD Scores of Cis-eQTLs for Protein-coding Genes", x = "SE", y = "PE")
+```
+
+### *Combining Matched and Unique*
+
+All of this data can then be plotted onto one graph where the gene
+location can be more directly compared to peak location to see where
+specifically these trans eQTLs are occuring and if there is some
+location where peaks from one of the sequencing methods are
+congregating. This type of graphic is common in eQTL literature, and the
+code was provided by Dr. Selcan Aydin from the Munger Lab at the Jackson
+Laboratory.
+```{r QTL-map-plot}
+map_dat2 <- map_dat %>%
+  separate(marker, into=c('chrom', 'pos_bp'), convert=T, remove=F) %>%
+  mutate(n=1:n()) %>% as_tibble()
+
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes <- UPEpeaksXlocation %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes$cumsum_bp_gene <- all.genes$midpoint + chrom_lens_offset[all.genes$chromosome]
+all.genes$cumsum_bp_peak <- all.genes$interp_bp_peak + chrom_lens_offset[all.genes$peak_chr]
+all.genes$cumsum_bp_gene <- ifelse(all.genes$local == TRUE, all.genes$cumsum_bp_gene + 30000000, all.genes$cumsum_bp_gene + 0)
+
+all.genes2 <- USEpeaksXlocation %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2$cumsum_bp_gene <- all.genes2$midpoint + chrom_lens_offset[all.genes2$chromosome]
+all.genes2$cumsum_bp_peak <- all.genes2$interp_bp_peak + chrom_lens_offset[all.genes2$peak_chr]
+all.genes2$cumsum_bp_gene <- ifelse(all.genes2$local == TRUE, all.genes2$cumsum_bp_gene - 30000000, all.genes2$cumsum_bp_gene + 0)
+
+all.genes3 <- MpeaksXlocation %>% mutate(midpoint = (start_position + end_position) / 2)
+all.genes3$cumsum_bp_gene <- all.genes3$midpoint + chrom_lens_offset[all.genes3$chromosome]
+all.genes3$cumsum_bp_peak <- all.genes3$interp_bp_peak + chrom_lens_offset[all.genes3$peak_chr]
+
+qtl.colors <- c(rgb(166,166,166, max = 255), rgb(0,0,255,max = 255), rgb(255,0,0,max = 255))
+qtl.colors <- alpha(qtl.colors, alpha = 0.5)
+
+par(mai = c(0.95, 0.95, 0.35, 1.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "coral2")
+)
+with(
+  filter(all.genes2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "cyan3")
+)
+with(
+  filter(all.genes3, lod.x > 7.5 | lod.y > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = rgb(red = 166, green = 166, blue = 166, max = 255))
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Matched", "PE", "SE"), col = c("gray65", "coral2", "cyan3"), pch = 19, cex = 1.5, title = "Subset", bty = "n")
+```
+
+We can integrate into this data the gene lists found to be unique in the expression analysis, allowing us to color the unique data as either shared unqiue (unique in eQTL but shared in expression) or double unique (unqiue in eQTL and expression analysis).
+```{r}
+SharedUPE <- filter(UPEpeaksXlocation, UPEpeaksXlocation$phenotype %in% uniquePEexp$GeneID)
+DoubleUPE <- filter(UPEpeaksXlocation, !(UPEpeaksXlocation$phenotype %in% uniquePEexp$GeneID))
+
+SharedUSE <- filter(USEpeaksXlocation, USEpeaksXlocation$phenotype %in% uniqueSEexp$GeneID)
+DoubleUSE <- filter(USEpeaksXlocation, !(USEpeaksXlocation$phenotype %in% uniqueSEexp$GeneID))
+```
+
+Splitting the three data sets into three graphs shows higher resolution for each specific data set. 
+```{r}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes <- SharedUPE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes$cumsum_bp_gene <- all.genes$midpoint + chrom_lens_offset[all.genes$chromosome]
+all.genes$cumsum_bp_peak <- all.genes$interp_bp_peak + chrom_lens_offset[all.genes$peak_chr]
+all.genes1pt2 <- DoubleUPE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes1pt2$cumsum_bp_gene <- all.genes1pt2$midpoint + chrom_lens_offset[all.genes1pt2$chromosome]
+all.genes1pt2$cumsum_bp_peak <- all.genes1pt2$interp_bp_peak + chrom_lens_offset[all.genes1pt2$peak_chr]
+all.genes1pt2$cumsum_bp_gene <- ifelse(all.genes1pt2$local == TRUE, all.genes1pt2$cumsum_bp_gene - 30000000, all.genes1pt2$cumsum_bp_gene + 0)
+
+
+par(mai = c(0.95, 0.95, 0.35, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes1pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "coral2")
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin PE and SE", "Gene expressed\nin PE only"), col = c("gray19", "coral2"), pch = 19, cex = 1.5, bty = "n")
+```
+```{r}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes2 <- SharedUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2$cumsum_bp_gene <- all.genes2$midpoint + chrom_lens_offset[all.genes2$chromosome]
+all.genes2$cumsum_bp_peak <- all.genes2$interp_bp_peak + chrom_lens_offset[all.genes2$peak_chr]
+all.genes2pt2 <- DoubleUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2pt2$cumsum_bp_gene <- all.genes2pt2$midpoint + chrom_lens_offset[all.genes2pt2$chromosome]
+all.genes2pt2$cumsum_bp_peak <- all.genes2pt2$interp_bp_peak + chrom_lens_offset[all.genes2pt2$peak_chr]
+all.genes2pt2$cumsum_bp_gene <- ifelse(all.genes2pt2$local == TRUE, all.genes2pt2$cumsum_bp_gene - 30000000, all.genes2pt2$cumsum_bp_gene + 0)
+
+
+par(mai = c(0.95, 0.95, 0.35, 2.5), xpd = TRUE)
+with(
+  filter(all.genes2, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes2, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes2pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "cyan3")
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin PE and SE", "Gene expressed\nin SE only"), col = c("gray19", "cyan3"), pch = 19, cex = 1.5, bty = "n")
+```
+```{r}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+
+all.genes3 <- MpeaksXlocation %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>%
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes3$cumsum_bp_gene <- all.genes3$midpoint + chrom_lens_offset[all.genes3$chromosome]
+all.genes3$cumsum_bp_peak <- all.genes3$interp_bp_peak + chrom_lens_offset[all.genes3$peak_chr]
+
+qtl.colors <- c(rgb(166,166,166, max = 255, alpha = 255), rgb(0,0,255,max = 255, alpha = 0), rgb(255,0,0,max = 255, alpha = 0))
+qtl.colors <- alpha(qtl.colors, alpha = 0.5)
+
+par(mai = c(0.95, 0.95, 0.35, 1.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes3, lod.x > 7.5 | lod.y > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = rgb(red = 166, green = 166, blue = 166, max = 255))
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+```
+
+The graph shows that there is no genomic location where one of the
+sequencing methods congregates, showing that the issue lies with
+mis-alignment of SE data to a type of gene, and not a physical
+chromosomal feature.
+
+## **Comparing Unique Data**
+
+We can then compare the unique data from the expression analysis (data
+loaded in the Data code chunk of the Methods section) with the unique
+data from the eQTL analysis to isolate the genes and the eQTLs for those
+genes that only one sequencing method is able to identify. Both data
+sets must first e filtered and combined for each sequencing method,
+which can then be plotted separately for each method.
+
+```{r Unique-data-comparison}
+uniquePEpeaks75 <- filter(uniquePEpeaks, lod > 7.5)
+uniqueSEpeaks75 <- filter(uniqueSEpeaks, lod > 7.5)
+#creating a unique data frame of the unique genes from the expression and the QTL data and joining them by gene id
+#Paired-end
+ExpPE <- data.frame(geneID = uniquePEexp$GeneID)
+eQTLPE <- data.frame(geneID = uniquePEpeaks75$phenotype)
+comparePE <- inner_join(ExpPE, eQTLPE, by = "geneID")
+#Single-end
+ExpSE <- data.frame(geneID = uniqueSEexp$GeneID)
+eQTLSE <- data.frame(geneID = uniqueSEpeaks75$phenotype)
+compareSE <- inner_join(ExpSE, eQTLSE, by = "geneID")
+#determining the biotypes for each unique data set
+PECompareBio <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = comparePE$geneID, mart = ensembl)
+SECompareBio <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = compareSE$geneID, mart = ensembl)
+#plotting the frequency of each biotype in the data set
+pdeqtl <- ggplot(PECompareBio, aes(y = gene_biotype)) +
+  geom_bar() +
+  labs(title = "Biotypes of Genes Present in Paired-End Exp and eQTL Analysis", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+sdeqtl <- ggplot(SECompareBio, aes(y = gene_biotype)) +
+  geom_bar() +
+  labs(title = "Biotypes of Genes Present in Single-End Exp and eQTL Analysis", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+ggarrange(pdeqtl, sdeqtl, labels = c("A", "B"), ncol = 1, nrow = 2)
+#filtering out the protein coding genes unique to single-end and determining gene names and descriptions
+seProt <- filter(SECompareBio, gene_biotype == "protein_coding") 
+getBM(attributes = c('ensembl_gene_id', 'external_gene_name', 'description'), filters = 'ensembl_gene_id', values = seProt$ensembl_gene_id, mart = ensembl)
+```
+
+This kind of analysis can show what types of peaks we aren't seeing when
+we do QTL analysis with only one sequencing method. Generally, the
+sequencing method will depend heavily on the scope of the research being
+done, but it can be seen from this data that single-end sequencing leads
+to a large quantity of pseudogenes, while paired-end sequencing can
+identify quite a few protein coding genes that single-end sequencing is
+unable to identify.
+
+We can determine the counts for each biotype in the two data sets for a
+direct comparison between the doubly unique data from each sequencing
+method.
+```{r unique-data-comparison-part-2}
+#getting counts for the biotypes in the exp/eqtl comparison data
+PECompCounts <- count(PECompareBio, gene_biotype, name = "Paired")
+SECompCounts <- count(SECompareBio, gene_biotype, name = "Single")
+#joining the counts data
+Uniques <- full_join(PECompCounts, SECompCounts, by = "gene_biotype")
+#replacing NA values with 0
+Uniques$Paired <- replace_na(Uniques$Paired, 0)
+Uniques$Single <- replace_na(Uniques$Single, 0)
+#converting the single counts to negative numbers
+Uniques <- mutate(Uniques, Single = Single * (-1))
+
+Uniques %>%
+  filter(str_detect(gene_biotype, "pseudogene") == FALSE & str_detect(gene_biotype, "protein_coding") == FALSE) -> smallrna
+Uniques %>%
+  filter(str_detect(gene_biotype, "pseudogene")) -> pseudogenes
+Uniques %>%
+  filter(str_detect(gene_biotype, "protein_coding")) -> proteins
+
+smallrna2 <- data.frame(gene_biotype = "Small RNA", PE = sum(smallrna$Paired), SE = sum(smallrna$Single))
+pseudogenes2 <- data.frame(gene_biotype = "Pseudogenes", PE = sum(pseudogenes$Paired), SE = sum(pseudogenes$Single))
+proteins2 <- data.frame(gene_biotype = "Protein-Coding", PE = sum(proteins$Paired), SE = sum(proteins$Single))
+
+plotting <- full_join(proteins2, pseudogenes2)
+plotting <- full_join(plotting, smallrna2)
+
+#plotting the count data on the same bar graph
+plotting %>%
+  pivot_longer(cols = c(SE, PE),
+               names_to = "SeqMethod",
+               values_to = "Counts") %>%
+  ggplot(aes(x = Counts, y = factor(gene_biotype, levels = rev(c("Protein-Coding", "Pseudogenes","Small RNA"))), fill = SeqMethod)) +
+    geom_col(position = "dodge") +
+    theme_pubr(base_size = 18) +
+    xlim(-225, 225) +
+    labs(title = "Biotypes Unique in Expression and eQTL", x = "Frequency", y = "Biotype", fill = "Sequencing Method")
+```
+
+This graph shows what was expected, that protein coding genes are
+present more in the PE data across both analyses and pseudogenes and
+associated categories are more present in the SE data across both
+analyses.
+
+***Analysis of eQTL data based on expression data of interest***
+
+In the expression analysis, the pseudogene for Rps7 was found to be the
+gene with lowest correlation between PE and SE counts. Here we identify
+the peaks associated with these two genes.
+
+```{r eQTL-analysis-by-expression-analysis, fig.width = 10, fig.height = 10}
+#################################
+##Hard-coding -> gene selection##
+#################################
+
+#joining the PE and SE data into the same frame
+AllPeaks <- full_join(PEpeaks, SEpeaks, by = "phenotype")
+#filtering for peaks identified for the Rps7 pseudogene
+filter(AllPeaks, phenotype == "ENSMUSG00000044424")
+#filtering for peaks identified for Rps7
+filter(AllPeaks, phenotype == "ENSMUSG00000061477")
+```
+
+This data shows that the peaks identified for the two genomic features
+are not similar peaks. Two peaks in both data sets are located on the
+same chromosome but not near each other.

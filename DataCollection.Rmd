@@ -1,0 +1,197 @@
+---
+title: "DataCollection"
+
+author: "Sam Ardery"
+
+date: "`r Sys.Date()`"
+
+output: 
+  html_document: 
+    toc: true 
+    toc_float: true 
+    theme: spacelab
+    code_folding: hide
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+This document will collect all of the data that is needed for the expression comparison, as well as isolate the data required for the eQTL mapping. The data is pulled from the directories containing the outputs of the gbrs and star pipelines for both paired-end(PE) and single-end(SE) sequencing files. 
+
+# Packages
+
+These packages are only loaded in this document. If you have not downloaded these packages, please do so before running this document.
+```{r, message = FALSE}
+library(assertthat)
+library(tidyverse)
+```
+
+
+# Obtaining single-end data
+
+This first chunk of code was adapted from code provided by Dr. Selcan Aydin and is used to isolate the gene expression counts from the SE analysis. 
+```{r SE-directory-collection, message = FALSE, results = "hide"}
+#Make total gene expression matrix from GBRS output
+gbrsdir <- '/projects/munger-lab/ArderyProject/SE_Data'
+gbrscountfiles <- list.files(gbrsdir, pattern=".diploid.genes.expected_read_counts",
+  full=TRUE)
+gbrstpmfiles <- list.files(gbrsdir, pattern=".diploid.genes.tpm",
+  full=TRUE)
+file1 <- read_tsv(gbrscountfiles[1])
+read_gbrs <- function(filename) {
+  samplename <- strsplit(basename(filename), "\\.")[[1]][1]
+  str_replace(samplename, pattern = "_ES", replacement = "_")
+  substring(samplename, 6) <- "."
+  dat <- read_tsv(filename) %>% mutate(sample=samplename)
+  dat$rep <- ifelse((grepl("_repB", filename) | grepl("_B", samplename)), "repB", "repA")
+  dat <- unite(dat, id, sample, rep, remove=FALSE)
+  assert_that(are_equal(dat$locus, file1$locus))
+  select(dat, locus, id, sample, rep, total)
+}
+counts <- bind_rows(lapply(gbrscountfiles, read_gbrs)) %>%
+  rename(count=total) 
+tpm <- bind_rows(lapply(gbrstpmfiles, read_gbrs)) %>% 
+  rename(tpm=total) 
+```
+
+This chunk will isolate the genes that have a nonzero count in more than 50% of the samples and a tpm greater than 0.5
+```{r SE-significance-filter}
+# Take genes with tpm > 0.5 and >50% nonzero counts
+SEfinal <- inner_join(counts, tpm) %>%
+  group_by(locus) %>%
+  filter(median(tpm) > 0.5, mean(count == 0) < 0.5) %>%
+  select(-tpm)
+print(paste("Gene Quantity: ", length(unique(SEfinal$locus))))    # ~15k genes
+```
+
+This chunk takes the count data from above and reformats it to allow for easy analysis and legibility. It also adds the biotype of each gene to the data table.
+```{r SE-gene-by-sample-matrix}
+#isolate the 3rd and fourth columns which contain the sample ids, the gene ids, and the counts
+SE <- SEfinal[,-c(2,4)]
+#round the count variable to four decimal places
+SE$count <- format(round(SE$count, 4))
+#reformat the table to make every sample a single column.
+SE <- pivot_wider(SE, names_from = sample, values_from = count)
+SE <- dplyr::rename(SE, GeneID = locus)
+```
+
+
+# Obtaining paired-end data
+
+This is the same code with a different directory to create the same data for paired-end sequencing results.
+```{r PE-directory-collection, message = FALSE, results = "hide"}
+#Make total gene expression matrix from GBRS output
+gbrsdir <- '/projects/munger-lab/ArderyProject/PE_Data'
+gbrscountfiles <- list.files(gbrsdir, pattern=".diploid.genes.expected_read_counts",
+  full=TRUE)
+gbrstpmfiles <- list.files(gbrsdir, pattern=".diploid.genes.tpm",
+  full=TRUE)
+file1 <- read_tsv(gbrscountfiles[1])
+read_gbrs <- function(filename) {
+  samplename <- strsplit(basename(filename), "\\.")[[1]][1]
+  str_replace(samplename, pattern = "_ES", replacement = "")
+  substring(samplename, 6) <- "."
+  dat <- read_tsv(filename) %>% mutate(sample=samplename)
+  dat$rep <- ifelse((grepl("_repB", filename) | grepl("_B", samplename)), "repB", "repA")
+  dat <- unite(dat, id, sample, rep, remove=FALSE)
+  assert_that(are_equal(dat$locus, file1$locus))
+  select(dat, locus, id, sample, rep, total)
+}
+counts <- bind_rows(lapply(gbrscountfiles, read_gbrs)) %>%
+  rename(count=total) 
+tpm <- bind_rows(lapply(gbrstpmfiles, read_gbrs)) %>% 
+  rename(tpm=total)
+```
+
+This chunk will isolate the genes that have a nonzero count in more than 50% of the samples and a tpm greater than 0.5
+```{r PE-significance-filter}
+# Take genes with tpm > 0.5 and >50% nonzero counts
+PEfinal <- inner_join(counts, tpm) %>%
+  group_by(locus) %>%
+  filter(median(tpm) > 0.5, mean(count == 0) < 0.5) %>%
+  select(-tpm)
+print(paste("Gene Quantity: ", length(unique(PEfinal$locus))))    # ~15k genes
+```
+
+This chunk takes the count data from above and reformats it to allow for easy analysis and legibility. It also adds the biotype of each gene to the data table.
+```{r PE-gene-by-sample-matrix}
+#isolate the 3rd and fourth columns which contain the sample ids, the gene ids, and the counts
+PE <- PEfinal[,-c(2,4)]
+#round the count variable to four decimal places
+PE$count <- format(round(PE$count, 4))
+PE$sample <- str_replace(PE$sample, pattern = "_ES", replacement = "")
+#reformat the table to make every sample a single column.
+PE <- pivot_wider(PE, names_from = sample, values_from = count)
+PE <- dplyr::rename(PE, GeneID = locus)
+```
+
+
+# Obtaining STAR single-end data
+
+This code performs the same tasks as the previous chunks but because the output of STAR is slightly different, the collection requires slighly different formatting. 
+```{r}
+counts <- data.frame(gene_id = as.character())
+tpm <- data.frame(gene_id = as.character())
+
+stardir <- '/projects/munger-lab/ArderyProject/STAR'
+starfiles <- list.files(stardir, pattern=".genes.results", full=TRUE)
+
+for(file in starfiles){
+  samplename <- strsplit(basename(file), "\\.")[[1]][1]
+  samplename2 <- paste0(samplename, "_tpm")
+  holder <- read_tsv(file)
+  holder <- holder[,-c(2:4,7)]
+  holder %>%
+    filter(expected_count > 0) %>%
+    rename(!!samplename := expected_count) %>%
+    rename(!!samplename2 := TPM) -> holder
+  counts <- full_join(counts, holder[,c(1:2)])
+  tpm <- full_join(tpm, holder[,-c(2)])
+}
+
+countslong <- pivot_longer(counts, cols = -gene_id, names_to = "Sample", values_to = "Counts")
+tpmlong <- pivot_longer(tpm, cols = -gene_id, names_to = "Sample", values_to = "TPM")
+
+tpmlong$Sample <- substr(tpmlong$Sample, 1, nchar(tpmlong$Sample)-4)
+
+STARfinal <- full_join(countslong, tpmlong, by = c("gene_id", "Sample"))
+
+STARfinal$Sample <- str_replace(STARfinal$Sample, "_", ".")
+
+STARfinal %>%
+  group_by(gene_id) %>%
+  filter(median(TPM) > 0.5, mean(Counts == 0) < 0.5) -> counts2
+
+STARfinal$Sample <- str_replace_all(STARfinal$Sample, "PB361.90", "PB361.90_B")
+STARfinal$Sample <- str_replace_all(STARfinal$Sample, "$", "_repA")
+STARfinal$Sample <- str_replace_all(STARfinal$Sample, "_B_repA", "_repB")
+STARfinal$Sample <- str_replace_all(STARfinal$Sample, "_ES", "")
+
+STARfinal %>%
+  filter(!is.na(TPM)) %>%
+  filter(!is.na(Counts)) -> STARfinal
+
+print(paste("Gene Quantity: ", length(unique(PEfinal$locus))))
+```
+
+Similar to the previous chunks, the data must be pivoted to ease the expression analysis. 
+```{r}
+STARcounts <- pivot_wider(counts2[1:3], names_from = "Sample", values_from = "Counts")
+
+STARcounts <- rename(STARcounts, GeneID = gene_id)
+
+STARcounts <- rename(STARcounts, PB361.73_B = PB361.73_ES_B)
+STARcounts <- rename(STARcounts, PB367.45_B = PB367.45_ES_B)
+STARcounts <- rename(STARcounts, PB361.90_B = PB361.90)
+```
+
+# Saving Data
+This data is saved as an RData file to load into the expression analysis and any other document that requires the gene expression matrices. 
+```{r Save-to-RData}
+save(SE, PE, file = "DataCollection/DataCollection.RData")
+save(PEfinal, file = "DataCollection/PEMappingData.RData")
+save(SEfinal, file = "DataCollection/SEMappingData.RData")
+save(STARfinal, file = "DataCollection/STAR_SEMappingData.RData")
+save(STARcounts, file = "DataCollection/STARcounts.RData")
+```
+

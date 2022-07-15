@@ -1,0 +1,385 @@
+---
+title: "Mismatch Allowance Test"
+
+author: "Sam Ardery"
+
+date: "`r Sys.Date()`"
+
+output: 
+  html_document: 
+    toc: true 
+    toc_float: true 
+    theme: spacelab
+    code_folding: hide
+---
+
+The analysis in this document serves to test the difference between the alignment quality when different amounts of mismatches are allowed during alignment. Bowtie allows a maximum of 3 mismatches so in this document we test and allowance of 0, 1, 2, and 3.
+
+# Packages
+
+These are all the packages required to complete this analysis.
+
+*\*Note* This chunk will only load the packages. If you have not installed them previously, this code will not work.
+
+```{r Load-packages, message=FALSE}
+library(here)
+library(tidyverse)
+library(Hmisc)
+library(biomaRt)
+library(assertthat)
+library(ggpubr)
+
+#Creating an ensemble mart is essential to obtain the biotypes of the various filtration of genes.
+ensembl <- useMart(biomart="ensembl",host="http://dec2017.archive.ensembl.org","mmusculus_gene_ensembl") #states a data set for use, in this case, the mouse data set
+```
+
+# Data
+
+This code takes the output of the gbrs pipeline and formats it into a count matrix that can be used for analysis. It was adapated from code provided by Dr. Selcan Aydin.
+
+```{r Load-mismatch-data, results = "hide", message = FALSE}
+#Make total gene expression matrix from GBRS output
+gbrsdir <- '/projects/munger-lab/ArderyProject/Mismatch_Test_Data'
+gbrscountfiles <- list.files(gbrsdir, pattern=".diploid.genes.expected_read_counts",full=TRUE)
+gbrstpmfiles <- list.files(gbrsdir, pattern=".diploid.genes.tpm", full=TRUE)
+file1 <- read_tsv(gbrscountfiles[1])
+
+read_gbrs <- function(filename) {
+  samplename <- strsplit(basename(filename), "\\.")[[1]][1]
+  str_replace(samplename, pattern = "_ES_", replacement = "_")
+  substring(samplename, 6) <- "."
+  dat <- read_tsv(filename) %>% mutate(sample=samplename)
+  dat$rep <- ifelse((grepl("_repB", filename) | grepl("_B", samplename)), "repB", "repA")
+  dat <- unite(dat, id, sample, rep, remove=FALSE)
+  assert_that(are_equal(dat$locus, file1$locus))
+  dplyr::select(dat, locus, id, sample, rep, total)
+}
+
+counts <- bind_rows(lapply(gbrscountfiles, read_gbrs)) %>%
+  rename(count=total) 
+tpm <- bind_rows(lapply(gbrstpmfiles, read_gbrs)) %>% 
+  rename(tpm=total) 
+```
+
+This chunk will isolate the genes that have a nonzero count in more than 50% of the samples and a tpm greater than 0.5
+
+```{r Filter-for-significance, message = FALSE}
+# Take genes with tpm > 0.5 and >50% nonzero counts
+final <- inner_join(counts, tpm) %>%
+  group_by(locus) %>%
+  filter(median(tpm) > 0.5, mean(count == 0) < 0.5) %>%
+  dplyr::select(-tpm)
+print(paste("Gene Quantity: ", length(unique(final$locus))))    # ~15k genes
+```
+
+This chunk takes the count data from above and reformats it to allow for easy analysis and legibility. It also adds the biotype of each gene to the data table.
+
+```{r Reformat-mismatch-data}
+#isolate the 3rd and fourth columns which contain the sample ids, the gene ids, and the counts
+Mismatch <- final[,-c(2,4)]
+#round the count variable to four decimal places
+Mismatch$count <- format(round(Mismatch$count, 4))
+#reformat the table to make every sample a single column.
+Mismatch <- pivot_wider(Mismatch, names_from = sample, values_from = count)
+Mismatch <- dplyr::rename(Mismatch, GeneID = locus)
+#Converting all of the data columns from character to numeric
+Mismatch$PB369.36_PE_v0 <- as.numeric(Mismatch$PB369.36_PE_v0)
+Mismatch$PB369.36_PE_v1 <- as.numeric(Mismatch$PB369.36_PE_v1)
+Mismatch$PB369.36_PE_v2 <- as.numeric(Mismatch$PB369.36_PE_v2)
+Mismatch$PB369.36_PE_v3 <- as.numeric(Mismatch$PB369.36_PE_v3)
+Mismatch$PB369.36_SE_v0 <- as.numeric(Mismatch$PB369.36_SE_v0)
+Mismatch$PB369.36_SE_v1 <- as.numeric(Mismatch$PB369.36_SE_v1)
+Mismatch$PB369.36_SE_v2 <- as.numeric(Mismatch$PB369.36_SE_v2)
+Mismatch$PB369.36_SE_v3 <- as.numeric(Mismatch$PB369.36_SE_v3)
+#adding the gene biotype as a column of the data 
+Biotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = Mismatch$GeneID, mart = ensembl)
+Biotypes <- rename(Biotypes, GeneID = ensembl_gene_id)
+Mismatch <- full_join(Mismatch, Biotypes, by = "GeneID")
+Mismatch <- rename(Mismatch, Biotype = gene_biotype)
+```
+
+# Analysis 
+
+## Raw Data {.tabset .tabset-pills}
+
+### Paired-end
+Correlations within the paired-end alignment. The correlations compare each decreasing quantity of mismatches to the original allowance of 3 mismatches. The Pearson and Spearman are determined to allow for comparison.
+*Note* The correlations could be directly printed from the rcorr function but in order to create a neat and legible result, it was saved in a container and then printed. 
+
+```{r Raw-paired-end-correlations}
+print("PE - v3 x v2")
+PP32 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v2, type = "pearson")
+SP32 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v2, type = "spearman")
+print(paste0("Pearson: ", PP32$r[3]))
+print(paste0("Spearman: ", SP32$r[3]))
+
+print("PE - v3 x v1")
+PP31 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v1, type = "pearson")
+SP31 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v1, type = "spearman")
+print(paste0("Pearson: ", PP31$r[3]))
+print(paste0("Spearman: ", SP31$r[3]))
+
+print("PE - v3 x v0")
+PP30 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v0, type = "pearson")
+SP30 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_PE_v0, type = "spearman")
+print(paste0("Pearson: ", PP30$r[3]))
+print(paste0("Spearman: ", SP30$r[3]))
+```
+
+### Single-end
+Correlations within the single-end alignment. This is done in the same way as the paired-end correlations.
+
+```{r Raw-single-end-correlations}
+print("SE - v3 x v2")
+PS32 <-rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v2, type = "pearson")
+SS32 <- rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v2, type = "spearman")
+print(paste0("Pearson: ", PS32$r[3]))
+print(paste0("Spearman: ", SS32$r[3]))
+
+print("SE - v3 x v1")
+PS31 <- rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v1, type = "pearson")
+SS31 <- rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v1, type = "spearman")
+print(paste0("Pearson: ", PS31$r[3]))
+print(paste0("Spearman: ", SS31$r[3]))
+
+print("SE - v3 x v0")
+PS30 <- rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v0, type = "pearson")
+SS30 <- rcorr(Mismatch$PB369.36_SE_v3, Mismatch$PB369.36_SE_v0, type = "spearman")
+print(paste0("Pearson: ", PS30$r[3]))
+print(paste0("Spearman: ", SS30$r[3]))
+```
+
+### PE x SE
+Correlations between single-end and paired-end alignment. This compares the same mismatch allowance between the two alignment methods.
+
+```{r Raw-PE-by-SE-correlations}
+print("PE v3 x SE v3")
+PPS3 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_SE_v3, type = "pearson")
+SPS3 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_SE_v3, type = "spearman")
+print(paste0("Pearson: ", PPS3$r[3]))
+print(paste0("Spearman: ", SPS3$r[3]))
+
+print("PE v2 x SE v2")
+PPS2 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v2, type = "pearson")
+SPS2 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v2, type = "spearman")
+print(paste0("Pearson: ", PPS2$r[3]))
+print(paste0("Spearman: ", SPS2$r[3]))
+
+print("PE v1 x SE v1")
+PPS1 <- rcorr(Mismatch$PB369.36_PE_v1, Mismatch$PB369.36_SE_v1, type = "pearson")
+SPS1 <- rcorr(Mismatch$PB369.36_PE_v1, Mismatch$PB369.36_SE_v1, type = "spearman")
+print(paste0("Pearson: ", PPS1$r[3]))
+print(paste0("Spearman: ", SPS1$r[3]))
+
+print("PE v0 x SE v0")
+PPS0 <- rcorr(Mismatch$PB369.36_PE_v0, Mismatch$PB369.36_SE_v0, type = "pearson")
+SPS0 <- rcorr(Mismatch$PB369.36_PE_v0, Mismatch$PB369.36_SE_v0, type = "spearman")
+print(paste0("Pearson: ", PPS0$r[3]))
+print(paste0("Spearman: ", SPS0$r[3]))
+```
+
+### Specialty correlations
+These correlations were performed based on results seen from the analysis of the Bowtie metadata (the quantity of reads processed, aligned, failed, and reported).
+
+```{r Raw-specialty-correlations}
+print("PE v3 x SE v0")
+PPS30 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_SE_v0, type = "pearson")
+SPS30 <- rcorr(Mismatch$PB369.36_PE_v3, Mismatch$PB369.36_SE_v0, type = "spearman")
+print(paste0("Pearson: ", PPS30$r[3]))
+print(paste0("Spearman: ", SPS30$r[3]))
+
+print("PE v2 x SE v0")
+PPS20 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v0, type = "pearson")
+SPS20 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v0, type = "spearman")
+print(paste0("Pearson: ", PPS20$r[3]))
+print(paste0("Spearman: ", SPS20$r[3]))
+
+print("PE v2 x SE v1")
+PPS21 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v1, type = "pearson")
+SPS21 <- rcorr(Mismatch$PB369.36_PE_v2, Mismatch$PB369.36_SE_v1, type = "spearman")
+print(paste0("Pearson: ", PPS21$r[3]))
+print(paste0("Spearman: ", SPS21$r[3]))
+```
+
+## Normalized Data {.tabset .tabset-pills}
+
+Upper quartile normalization is utilized to ensure that the data can be directly compared without the hindrance from confounding variables.
+
+```{r Upper-quartile-normalization}
+#determining the upper quartile for each column of data 
+PEv0quart <- as.numeric(quantile(Mismatch$PB369.36_PE_v0)[4])
+PEv1quart <- as.numeric(quantile(Mismatch$PB369.36_PE_v1)[4])
+PEv2quart <- as.numeric(quantile(Mismatch$PB369.36_PE_v2)[4])
+PEv3quart <- as.numeric(quantile(Mismatch$PB369.36_PE_v3)[4])
+SEv0quart <- as.numeric(quantile(Mismatch$PB369.36_SE_v0)[4])
+SEv1quart <- as.numeric(quantile(Mismatch$PB369.36_SE_v1)[4])
+SEv2quart <- as.numeric(quantile(Mismatch$PB369.36_SE_v2)[4])
+SEv3quart <- as.numeric(quantile(Mismatch$PB369.36_SE_v3)[4])
+
+#creating a normalized data frame using the upper quartile values from above
+Normalized <- data.frame(GeneID = Mismatch$GeneID, 
+                         Biotype = Mismatch$Biotype, 
+                         PE_v0 = (Mismatch$PB369.36_PE_v0 / PEv0quart), 
+                         PE_v1 = (Mismatch$PB369.36_PE_v1 / PEv1quart), 
+                         PE_v2 = (Mismatch$PB369.36_PE_v2 / PEv2quart), 
+                         PE_v3 = (Mismatch$PB369.36_PE_v3 / PEv3quart), 
+                         SE_v0 = (Mismatch$PB369.36_SE_v0 / SEv0quart), 
+                         SE_v1 = (Mismatch$PB369.36_SE_v1 / SEv1quart), 
+                         SE_v2 = (Mismatch$PB369.36_SE_v2 / SEv2quart), 
+                         SE_v3 = (Mismatch$PB369.36_SE_v3 / SEv3quart))
+```
+
+### Paired-end
+Correlations within the paired-end alignment. This is done in the same way as the raw data.
+
+```{r Normalized-PE-correlations}
+print("PE - v3 x v2")
+NPP32 <- rcorr(Normalized$PE_v3, Normalized$PE_v2, type = "pearson")
+NSP32 <- rcorr(Normalized$PE_v3, Normalized$PE_v2, type = "spearman")
+print(paste0("Pearson: ", NPP32$r[3]))
+print(paste0("Spearman: ", NSP32$r[3]))
+
+print("PE - v3 x v1")
+NPP31 <- rcorr(Normalized$PE_v3, Normalized$PE_v1, type = "pearson")
+NSP31 <- rcorr(Normalized$PE_v3, Normalized$PE_v1, type = "spearman")
+print(paste0("Pearson: ", NPP31$r[3]))
+print(paste0("Spearman: ", NSP31$r[3]))
+
+print("PE - v3 x v0")
+NPP30 <- rcorr(Normalized$PE_v3, Normalized$PE_v0, type = "pearson")
+NSP30 <- rcorr(Normalized$PE_v3, Normalized$PE_v0, type = "spearman")
+print(paste0("Pearson: ", NPP30$r[3]))
+print(paste0("Spearman: ", NSP30$r[3]))
+```
+
+### Single-end 
+Correlations within the single-end alignment
+
+```{r Normalized-SE-correlations}
+print("SE - v3 x v2")
+NPS32 <- rcorr(Normalized$SE_v3, Normalized$SE_v2, type = "pearson")
+NSS32 <- rcorr(Normalized$SE_v3, Normalized$SE_v2, type = "spearman")
+print(paste0("Pearson: ", NPS32$r[3]))
+print(paste0("Spearman: ", NSS32$r[3]))
+
+print("SE - v3 x v1")
+NPS31 <- rcorr(Normalized$SE_v3, Normalized$SE_v1, type = "pearson")
+NSS31 <- rcorr(Normalized$SE_v3, Normalized$SE_v1, type = "spearman")
+print(paste0("Pearson: ", NPS31$r[3]))
+print(paste0("Spearman: ", NSS31$r[3]))
+
+print("SE - v3 x v0")
+NPS30 <-rcorr(Normalized$SE_v3, Normalized$SE_v0, type = "pearson")
+NSS30 <- rcorr(Normalized$SE_v3, Normalized$SE_v0, type = "spearman")
+print(paste0("Pearson: ", NPS30$r[3]))
+print(paste0("Spearman: ", NSS30$r[3]))
+```
+
+### PE x SE
+Correlations between single-end and paired-end alignments
+
+```{r Normalized-PE-by-SE-correlations}
+print("PE v3 x SE v3")
+NPPS3 <- rcorr(Normalized$PE_v3, Normalized$SE_v3, type = "pearson")
+NSPS3 <- rcorr(Normalized$PE_v3, Normalized$SE_v3, type = "spearman")
+print(paste0("Pearson: ", NPPS3$r[3]))
+print(paste0("Spearman: ", NSPS3$r[3]))
+
+
+print("PE v2 x SE v2")
+NPPS2 <- rcorr(Normalized$PE_v2, Normalized$SE_v2, type = "pearson")
+NSPS2 <- rcorr(Normalized$PE_v2, Normalized$SE_v2, type = "spearman")
+print(paste0("Pearson: ", NPPS2$r[3]))
+print(paste0("Spearman: ", NSPS2$r[3]))
+
+print("PE v1 x SE v1")
+NPPS1 <- rcorr(Normalized$PE_v1, Normalized$SE_v1, type = "pearson")
+NSPS1 <- rcorr(Normalized$PE_v1, Normalized$SE_v1, type = "spearman")
+print(paste0("Pearson: ", NPPS1$r[3]))
+print(paste0("Spearman: ", NSPS1$r[3]))
+
+print("PE v0 x SE v0")
+NPPS0 <- rcorr(Normalized$PE_v0, Normalized$SE_v0, type = "pearson")
+NSPS0 <- rcorr(Normalized$PE_v0, Normalized$SE_v0, type = "spearman")
+print(paste0("Pearson: ", NPPS0$r[3]))
+print(paste0("Spearman: ", NSPS0$r[3]))
+```
+
+### Specialty correlations
+These correlations were performed based on results seen from the analysis of the Bowtie metadata (the quantity of reads processed, aligned, failed, and reported).
+
+```{r Normalized-specialty-correlations}
+print("PE v3 x SE v0")
+NPPS30 <- rcorr(Normalized$PE_v3, Normalized$SE_v0, type = "pearson")
+NSPS30 <- rcorr(Normalized$PE_v3, Normalized$SE_v0, type = "spearman")
+print(paste0("Pearson: ", NPPS30$r[3]))
+print(paste0("Spearman: ", NSPS30$r[3]))
+
+print("PE v2 x SE v0")
+NPPS20 <- rcorr(Normalized$PE_v2, Normalized$SE_v0, type = "pearson")
+NSPS20 <- rcorr(Normalized$PE_v2, Normalized$SE_v0, type = "spearman")
+print(paste0("Pearson: ", NPPS20$r[3]))
+print(paste0("Spearman: ", NSPS20$r[3]))
+
+print("PE v2 x SE v1")
+NPPS21 <- rcorr(Normalized$PE_v2, Normalized$SE_v1, type = "pearson")
+NSPS21 <- rcorr(Normalized$PE_v2, Normalized$SE_v1, type = "spearman")
+print(paste0("Pearson: ", NPPS21$r[3]))
+print(paste0("Spearman: ", NSPS21$r[3]))
+```
+
+### Further Analysis
+Plotting each column on a histogram. By displaying the data in histogram format, we can see how the data has changed through the normalization process. The histograms are plotted on a log scale to provide clarity in the data on the low end.
+
+```{r Graph-normalized-correlations}
+#plotting each column on its own histogram 
+pev0 <- ggplot(Normalized, aes(x = log1p(PE_v0))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of PE v0 counts")
+pev1 <- ggplot(Normalized, aes(x = log1p(PE_v1))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of PE v1 counts")
+pev2 <- ggplot(Normalized, aes(x = log1p(PE_v2))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of PE v2 counts")
+pev3 <- ggplot(Normalized, aes(x = log1p(PE_v3))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of PE v3 counts")
+sev0 <- ggplot(Normalized, aes(x = log1p(SE_v0))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of SE v0 counts")
+sev1 <- ggplot(Normalized, aes(x = log1p(SE_v1))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of SE v1 counts")
+sev2 <- ggplot(Normalized, aes(x = log1p(SE_v2))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of SE v2 counts")
+sev3 <- ggplot(Normalized, aes(x = log1p(SE_v3))) +
+  geom_histogram(binwidth = 0.05) +
+  theme_pubr() +
+  labs(x = "log of SE v3 counts")
+
+ggarrange(pev0, sev0 ,pev1, sev1, pev2, sev2, pev3, sev3, nrow = 4, ncol = 2)
+```
+
+Determining the gene with the maximum value in each column.
+
+```{r Max-of-normalized-expression, results = "hide"}
+slice_max(Normalized, PE_v0)
+slice_max(Normalized, PE_v1)
+slice_max(Normalized, PE_v2)
+slice_max(Normalized, PE_v3)
+slice_max(Normalized, SE_v0)
+slice_max(Normalized, SE_v1)
+slice_max(Normalized, SE_v2)
+slice_max(Normalized, SE_v3)
+```
+
+The gene with the maximum value across all samples was found to be ENSMUSG00000064351, the mitochondrially encoded cytochrome c oxidase.

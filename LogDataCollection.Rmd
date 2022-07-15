@@ -1,0 +1,375 @@
+---
+title: "LogFileDataCollection"
+
+author: "Sam Ardery"
+
+date: "`r Sys.Date()`"
+
+output: 
+  html_document: 
+    toc: true 
+    toc_float: true 
+    theme: spacelab
+    code_folding: hide
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+This document will take a directory containing only the log files of multiple runs of the gbrs pipeline and output the alignment data from the bowtie steps. This document contains hardcoding when the directory is needed so it is important to change these values when running this with a different directory.
+
+# Packages
+
+This code loads all of the packages necessary to run this document
+*Note* If you have not already installed these packages, you must do that before running this chunk.
+```{r Load-packages , message = FALSE}
+library(tidyverse)
+library(ggpubr)
+```
+
+# Paired-end {.tabset .tabset-pills}
+
+## Extracting the data
+
+Each log file must be opened and the data extracted. When using the gbrs pipeline, the sample id is located on the fourth line and the bowtie alignment data is located on the 7-10 lines, so these were the lines extracted for analysis. At the end of the chunk, the data is written out to a txt file so that this can be saved for later analysis. The txt file will be reloaded so the data vector can be used again for the SE data.
+
+```{r Read-and-isolate-PE-log-data}
+dir = "/projects/munger-lab/SampleReruns/PE_Log_Files/"
+dataVector <- c()
+#Getting the list of files
+listOfFiles <- list.files(path = "/projects/munger-lab/SampleReruns/PE_Log_Files/")
+#in a loop, reading each file and extracting the sample id and the bowtie read data
+for(file in listOfFiles) {
+  data <- read.delim(paste0(dir, file))
+  samplename <- data[4,]
+  if(str_length(samplename) < 20){
+      dataVector <- append(dataVector, str_extract(samplename, "PB[:digit:]+_[:digit:]+"))
+    } else {
+      dataVector <- append(dataVector, str_extract(samplename, "PB[:digit:]+_[:digit:]+_ES_B"))
+    }
+  dataVector <- append(dataVector, data[7,]) #Processed Reads - the number of reads that bowtie took in to process
+  dataVector <- append(dataVector, data[8,]) #Aligned Reads - the number of reads that had at least one alignment
+  dataVector <- append(dataVector, data[9,]) #Failed Reads - the number of reads that failed to align
+  dataVector <- append(dataVector, data[10,]) #Reported Reads
+}
+#writing data to a text file
+write(dataVector, "PEBowtieData.txt")
+```
+
+## Importing and filtering the data
+
+The txt file is read back in and each piece of information is separated from the file and placed into its own vector so that the data can be directly compared.
+
+```{r PE-isolating-required-data}
+#importing the data 
+df <- tibble(readLines("PEBowtieData.txt"))
+#filtering for sample ids
+SampleIDs <- filter(df, str_detect(df$`readLines("PEBowtieData.txt")`, "PB"))
+SampleIDs <- rename(SampleIDs, SampleIDs = `readLines("PEBowtieData.txt")`)
+#filtering for the processed reads
+ProcessedReads <- filter(df, str_detect(df$`readLines("PEBowtieData.txt")`, "processed"))
+ProcessedReads <- rename(ProcessedReads, ProcessedReads = `readLines("PEBowtieData.txt")`)
+#filtering for the aligned reads
+AlignedReads <- filter(df, str_detect(df$`readLines("PEBowtieData.txt")`, "least"))
+AlignedReads <- rename(AlignedReads, AlignedReads = `readLines("PEBowtieData.txt")`)
+#filtering for the failed reads
+FailedReads <- filter(df, str_detect(df$`readLines("PEBowtieData.txt")`, "failed"))
+FailedReads <- rename(FailedReads, FailedReads = `readLines("PEBowtieData.txt")`)
+#filtering for the total reported reads
+ReportedReads <- filter(df, str_detect(df$`readLines("PEBowtieData.txt")`, "stream"))
+ReportedReads <- rename(ReportedReads, ReportedReads = `readLines("PEBowtieData.txt")`)
+```
+
+Sub-setting the data for only the numeric values (this code is just to test, it will be used to directly create the complete data frame)
+
+```{r PE-data-frame-creation-test, results = "hide"}
+#extract the number from each read column
+as.numeric(str_extract(ProcessedReads$ProcessedReads, "[:digit:]+"))
+as.numeric(str_extract(AlignedReads$AlignedReads, "[:digit:]+"))
+as.numeric(str_extract(FailedReads$FailedReads, "[:digit:]+"))
+as.numeric(str_extract(ReportedReads$ReportedReads, "[:digit:]+"))
+```
+
+Creating a completed data frame used the code above
+
+```{r PE-data-frame-creation}
+CompletePEdf <- data.frame(SampleID = SampleIDs,
+                         Processed = as.numeric(str_extract(ProcessedReads$ProcessedReads, "[:digit:]+")),
+                         Aligned = as.numeric(str_extract(AlignedReads$AlignedReads, "[:digit:]+")),
+                         Failed = as.numeric(str_extract(FailedReads$FailedReads, "[:digit:]+")),
+                         Reported = as.numeric(str_extract(ReportedReads$ReportedReads, "[:digit:]+")))
+```
+
+## Analysis
+
+Printing the summary for raw numerical data
+
+```{r PE-data-summary}
+#Processed Reads
+print("Summary of Processed Reads")
+summary(CompletePEdf$Processed)
+#Aligned Reads
+print("Summary of Aligned Reads")
+summary(CompletePEdf$Aligned)
+#Failed Reads
+print("Summary of Failed Reads")
+summary(CompletePEdf$Failed)
+#Reported Reads
+print("Summary of Reported Reads")
+summary(CompletePEdf$Reported)
+```
+
+Displaying Aligned and Failed Reads as percentages (as it relates to processed read counts)
+
+```{r PE-adding-data-percentage}
+CompletePEdf %>%
+  #Get the percentage for aligned reads
+  mutate(AlignedPerc = (Aligned / Processed) * 100) %>%
+  #Get the percentage for failed reads
+  mutate(FailedPerc = (Failed / Processed) * 100) %>%
+  #Get the ratio of reported reads to aligned reads
+  mutate(ReportRatio = (Reported / Aligned)) %>%
+  #Get reported percentage
+  mutate(ReportedPerc = (Reported / Processed) * 100) -> CompletePEdf
+```
+
+Printing summary of percentages. All percentages are in reference to the quantity of processed reads.
+
+```{r PE-percenage-summary}
+#Aligned read percentage
+print("Aligned Read percentage")
+summary(CompletePEdf$AlignedPerc)
+#Failed read percentage
+print("Failed Read Percentage")
+summary(CompletePEdf$FailedPerc)
+#Reported Read Ratio
+print("Reported/Aligned Ratio")
+summary(CompletePEdf$ReportRatio)
+#Reported Read Percentage
+print("Reported Read Percentage")
+summary(CompletePEdf$ReportedPerc)
+```
+
+# Single End Data {.tabset .tabset-pills}
+
+## Extracting the data
+
+Here, the same thing is done as the paired-end data. *Note* Up until the creation of the complete data frame, all of the variables used are the same as the paired-end variables. In this code they are overwritten with the single-end data. If you wish to have this data separated out, the variables used here must be renamed.
+
+```{r Read-and-isolate-SE-data}
+dir = "/projects/munger-lab/SampleReruns/SE_Log_Files/"
+dataVector <- c()
+#Getting the list of files
+listOfFile <- list.files(path = "/projects/munger-lab/SampleReruns/SE_Log_Files/")
+#in a loop, reading each file and extracting the sample id and the bowtie read data
+for(file in listOfFile) {
+  data <- read.delim(paste0(dir, file))
+  samplename <- data[4,]
+  if(str_length(samplename) == 15){
+      dataVector <- append(dataVector, str_extract(samplename, "PB[:digit:]+_[:digit:]+"))
+    } else {
+      dataVector <- append(dataVector, str_extract(samplename, "PB[:digit:]+_[:digit:]+_ES_B"))
+    }
+  dataVector <- append(dataVector, data[7,]) #Processed Reads - the number of reads that bowtie took in to process
+  dataVector <- append(dataVector, data[8,]) #Aligned Reads - the number of reads that had at least one alignment
+  dataVector <- append(dataVector, data[9,]) #Failed Reads - the number of reads that failed to align
+  dataVector <- append(dataVector, data[10,]) #Reported Reads
+}
+#writing data to a text file
+write(dataVector, "SEBowtieData.txt")
+```
+
+## Importing and filtering the data
+
+The txt file is read back in and each piece of information is separated from the file and placed into its own vector so that the data can be directly compared.
+
+```{r SE-isolating-required-data}
+#importing the data 
+df <- tibble(readLines("SEBowtieData.txt"))
+#filtering for sample ids
+SampleIDs <- filter(df, str_detect(df$`readLines("SEBowtieData.txt")`, "PB"))
+SampleIDs <- rename(SampleIDs, SampleIDs = `readLines("SEBowtieData.txt")`)
+#filtering for the processed reads
+ProcessedReads <- filter(df, str_detect(df$`readLines("SEBowtieData.txt")`, "processed"))
+ProcessedReads <- rename(ProcessedReads, ProcessedReads = `readLines("SEBowtieData.txt")`)
+#filtering for the aligned reads
+AlignedReads <- filter(df, str_detect(df$`readLines("SEBowtieData.txt")`, "least"))
+AlignedReads <- rename(AlignedReads, AlignedReads = `readLines("SEBowtieData.txt")`)
+#filtering for the failed reads
+FailedReads <- filter(df, str_detect(df$`readLines("SEBowtieData.txt")`, "failed"))
+FailedReads <- rename(FailedReads, FailedReads = `readLines("SEBowtieData.txt")`)
+#filtering for the total reported reads
+ReportedReads <- filter(df, str_detect(df$`readLines("SEBowtieData.txt")`, "stream"))
+ReportedReads <- rename(ReportedReads, ReportedReads = `readLines("SEBowtieData.txt")`)
+```
+
+Sub-setting the data for only the numeric values (this code is just to test, it will be used to directly create the complete data frame)
+
+```{r SE-data-frame-creation-test, results = "hide"}
+#extract the number from each read column
+as.numeric(str_extract(ProcessedReads$ProcessedReads, "[:digit:]+"))
+as.numeric(str_extract(AlignedReads$AlignedReads, "[:digit:]+"))
+as.numeric(str_extract(FailedReads$FailedReads, "[:digit:]+"))
+as.numeric(str_extract(ReportedReads$ReportedReads, "[:digit:]+"))
+```
+
+Creating a completed data frame used the code above
+
+```{r SE-data-frame-creation}
+CompleteSEdf <- data.frame(SampleID = SampleIDs,
+                         Processed = as.numeric(str_extract(ProcessedReads$ProcessedReads, "[:digit:]+")),
+                         Aligned = as.numeric(str_extract(AlignedReads$AlignedReads, "[:digit:]+")),
+                         Failed = as.numeric(str_extract(FailedReads$FailedReads, "[:digit:]+")),
+                         Reported = as.numeric(str_extract(ReportedReads$ReportedReads, "[:digit:]+")))
+```
+
+## Analysis
+
+Printing the summary for raw numerical data
+
+```{r SE-data-summary}
+#Processed Reads
+print("Summary of Processed Reads")
+summary(CompleteSEdf$Processed)
+#Aligned Reads
+print("Summary of Aligned Reads")
+summary(CompleteSEdf$Aligned)
+#Failed Reads
+print("Summary of Failed Reads")
+summary(CompleteSEdf$Failed)
+#Reported Reads
+print("Summary of Reported Reads")
+summary(CompleteSEdf$Reported)
+```
+
+Displaying Aligned and Failed Reads as percentages (as it relates to processed read counts)
+
+```{r SE-adding-percentage-data}
+CompleteSEdf %>%
+  #Get the percentage for aligned reads
+  mutate(AlignedPerc = (Aligned / Processed) * 100) %>%
+  #Get the percentage for failed reads
+  mutate(FailedPerc = (Failed / Processed) * 100) %>%
+  #Get the ratio of reported reads to aligned reads
+  mutate(ReportRatio = (Reported / Aligned)) %>%
+  #Get reported percentage
+  mutate(ReportedPerc = (Reported / Processed) * 100) -> CompleteSEdf
+```
+
+Printing summary of percentages. All percentages are in reference to the quantity of processed reads.
+
+```{r SE-percenage-summary}
+#Aligned read percentage
+print("Aligned Read percentage")
+summary(CompleteSEdf$AlignedPerc)
+#Failed read percentage
+print("Failed Read Percentage")
+summary(CompleteSEdf$FailedPerc)
+#Reported Read Ratio
+print("Reported/Aligned Ratio")
+summary(CompleteSEdf$ReportRatio)
+#Reported Read Percentage
+print("Reported Read Percentage")
+summary(CompleteSEdf$ReportedPerc)
+```
+
+# STAR Single End Data {.tabset .tabset-pills}
+
+## Extracting the data
+
+Here we do a very similar extraction as previously but with slight alterations due to the differences in how Bowtie and STAR report their log data. *Note* Once again, some of the variables used here are the same as used above. If you would like to isolate these variables from the previous two sets, you have to first rename them.
+```{r Read-and-isolate-star-data}
+dir = "/projects/munger-lab/SampleReruns/STAR/STARLogFiles/"
+dataVector <- c()
+listOfFiles <- list.files(path = "/projects/munger-lab/SampleReruns/STAR/STARLogFiles/")
+
+for(file in listOfFiles) {
+  data <- read.delim(paste0(dir, file))
+  if(str_length(file) == 25){
+    samplename <- str_extract(file, "PB[:digit:]+_[:digit:]+")
+  } else {
+    samplename <- str_extract(file, "PB[:digit:]+_[:digit:]+_ES_B")
+  }
+
+  dataVector <- append(dataVector, samplename)
+  dataVector <- append(dataVector, data[8,2])
+
+}
+write(dataVector, "SESTARData.txt")
+```
+
+
+## Importing and filtering the data
+
+Here the data is loaded in from the text file made in the previous chunk and it is filtered down to a data frame that contains one column of all the sample IDs and one column of the alignment percentages. 
+```{r Isolating-required-data}
+df <- tibble(readLines("SESTARData.txt"))
+
+SampleIDs <- filter(df, str_detect(df$`readLines("SESTARData.txt")`, "P"))
+SampleIDs <- rename(SampleIDs, SampleID = `readLines("SESTARData.txt")`)
+SampleIDs[120,] <- "PB361_90_ES_B"
+
+AlignedPerc <- filter(df, str_detect(df$`readLines("SESTARData.txt")`, "^[:digit:]"))
+AlignedPerc$`readLines("SESTARData.txt")` <- str_extract(AlignedPerc$`readLines("SESTARData.txt")`, "[:digit:][:digit:]\\.[:digit:][:digit:]")
+AlignedPerc <- rename(AlignedPerc, SE_STAR = `readLines("SESTARData.txt")`)
+
+STARdf <- data.frame(SampleID = SampleIDs, SE_STAR = AlignedPerc)
+STARdf$SE_STAR <- as.numeric(STARdf$SE_STAR) 
+```
+
+## Analysis
+
+Printing the summary for the STAR alignment data
+```{r STAR-data-summary}
+#Aligned Reads
+print("Summary of Aligned Reads")
+summary(STARdf$SE_STAR)
+```
+
+
+# Combined Analysis 
+
+In this chunk, the alignment percentage is isolated from each data frame and joined together into one data frame that contains the alignment for all three methods for each of the 185 samples. 
+```{r Full-alignment-percentage-dataframe}
+PEAligned <- data.frame(SampleID = CompletePEdf$SampleID, PE_Bowtie = CompletePEdf$AlignedPerc)
+SEAligned <- data.frame(SampleID = CompleteSEdf$SampleID, SE_Bowtie = CompleteSEdf$AlignedPerc)
+
+AlignedPercentages <- full_join(PEAligned, SEAligned, by = "SampleID")
+AlignedPercentages <- full_join(AlignedPercentages, STARdf, by = "SampleID")
+
+write_csv(AlignedPercentages, "AlignedPercentages.csv")
+```
+
+We can then use this data frame to plot the three alignment methods against each other, showing how well each method aligns reads in comparison to the other methods. 
+```{r Alignment-percentage-graphic}
+AlignedPercentages %>%
+  pivot_longer(c(2:4), names_to = "Alignment_Method", values_to = "Percent_Aligned") %>%
+  ggplot(aes(x = Alignment_Method, y = Percent_Aligned)) +
+    geom_violin() +
+    geom_boxplot(width = 0.1) +
+    theme_pubr(base_size = 18) +
+    stat_compare_means(label.y = 95) +
+    stat_compare_means(label = "p.signif", method = "t.test", ref.group = ".all.") +
+    labs(x = "Alignment Method", y = "Percent Aligned")
+```
+
+We can then isolate the average of each row and print as a table to show the difference in the average alignment percentage between each data frame. 
+```{r Alignment-averages}
+Averages <- data.frame(PEBowtie = mean(AlignedPercentages$PE_Bowtie), 
+                       SEBowtie = mean(AlignedPercentages$SE_Bowtie), 
+                       SESTAR = mean(AlignedPercentages$SE_STAR))
+
+print.data.frame(Averages)
+```
+
+
+
+
+
+
+
+
+
+
+
+

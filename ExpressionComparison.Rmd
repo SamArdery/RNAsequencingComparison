@@ -1,0 +1,729 @@
+---
+title: "Comparison of Expression Data Derived from Paired-End and Single-End Sequencing"
+
+author: 'Sam Ardery'
+
+date: "`r Sys.Date()`"
+
+output: 
+  html_document: 
+    toc: true 
+    toc_float: true 
+    theme: spacelab
+    code_folding: hide
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+When performing an RNA-sequencing experiment, one of the important components of experimental design to determine whether your experiment requires single-end or paired-end sequencing. Single end sequencing provides the sequence of a single-end of each RNA fragment, while paired-end sequencing provides the sequence of both ends of each RNA fragment, usually covering 75-100 base pairs for each sequencing read. For most experiments, single-end reads are deemed sufficient when alignment accuracy will not drastically effect experimental results. Single-end sequencing is also preferred for its lower cost, allowing researchers to include more samples on the same budget. Paired-end sequencing costs more but is proposed to have an increased accuracy for alignment that allows for studies focused on novel transcripts and alternative splicing. It is the purpose of the following document to show the differences in alignment accuracy via gene expression counts between single-end and paired-end sequencing performed on Diversity Outbred mice at the Jackson Laboratory. In order to complete this analysis pipeline with other data files, a seperate expression matrix is required for both single-end and paired-end analysis. No other data files are necessary.
+
+# Methods {.tabset .tabset-pills}
+
+## Packages
+
+The packages used in this document are `here` for data file locating, `tidyverse` for data manipulation and visualization, `Hmisc` for correlation testing, `biomaRt` for genomic annotation, `gprofiler2` for over-representation analysis, `ggpubr` for publication ready figure themes, and `formattable` for table design. The ensembl used is v91 from December 2017, as that was the version used when this data was initially analyzed.
+
+```{r Load-packages, message=FALSE}
+library(here)
+library(tidyverse)
+library(Hmisc)
+library(biomaRt)
+library(gprofiler2)
+library(ggpubr)
+library(formattable)
+library(eulerr)
+
+#Creating an ensemble mart is essential to obtain the biotypes of the various filtration of genes.
+ensembl <- useMart(biomart="ensembl",host="http://dec2017.archive.ensembl.org","mmusculus_gene_ensembl") #states a data set for use, in this case, the mouse data set
+```
+
+## Data
+
+After the packages used are loaded, the data needed can then be loaded into the session. In this document, the data used is single-end and paired-end gene expression counts obtained via RNA-seq reads from 185 DO mice. First, the single-end reads are loaded, the raw and normalized expression data are isolated and the extra data is removed from the environment. The same is done for the paired-end data. The normalized data is then converted to a tibble where the gene ID is also a column for each sequencing method. To create some of the combined data that will be used later in the analysis, the two tibbles are joined to create a tibble only containing gene data found in both sequencing methods, as well as tibbles containing the matched and unique data for each sequencing method. Then tibbles containing gene data unique to each sequencing method are created.
+
+```{r Load-PE-and-SE-data, message = FALSE}
+###############################
+##Hard-coding -> data loading##
+###############################
+
+# load the paird end and single end data
+data <- load(here("DataCollection", "DataCollection.RData"))
+
+#converting the two matrices into data frames and then converting the row names to a column containing gene IDs and converting to a tibble
+PE[2:186] <- apply(PE[2:186], 2, as.numeric)
+PE <- as_tibble(PE)
+SE[2:186] <- apply(SE[2:186], 2, as.numeric)
+SE <- as_tibble(SE)
+
+#create a matched tibble for each so that they both contain only rows that match between the two.
+matched <- inner_join(PE, SE, by = "GeneID")
+matchedPE <- semi_join(PE, SE, by = "GeneID") #This contains only the paired-end data of the matched set
+matchedSE <- semi_join(SE, PE, by = "GeneID") #This contains only the single-end data of the matched set
+
+#create unique tibble that only contain the rows that are not matched between the two data sets
+uniquePE <- anti_join(PE, SE, by = "GeneID")
+uniqueSE <- anti_join(SE, PE, by = "GeneID")
+```
+
+# Results {.tabset .tabset-pills}
+
+Important Note: The PE data provided estimates for 14,547 genes and the SE data provided estimates for 15,185 genes. When the data was matched for gene IDs present, estimates for 14,120 genes remained.
+
+## **Sample Comparison** {.tabset .tabset-pills}
+
+The following sections show the filtering of the data to compare the single end results to the paired end results for all of the genes in each sample. This allows us to see the variation between the two methods within each sample that is run.
+
+### *Test analysis on the first sample*
+
+The comparison being performed correlates the gene expression data for each gene for one sample between single-end and paired-end. This allows us to see how different each sequencing method performs on an entire sample level. We first want to create a test analysis to make sure the comparison works the way we want it to, as well as a single sample analysis we can later mutate to look at specific samples of interest should they arise in later analysis
+
+```{r Sample-correlation-test}
+#Isolating the data for the comparison
+Sample1PE <- dplyr::select(matchedPE, 1:2) #Selecting the first two columns, the gene id and first sample; paired end
+Sample1SE <- dplyr::select(matchedSE, 1:2) #Selecting the first two columns, the gene id and first sample; single end
+combined_test <- left_join(Sample1PE, Sample1SE, by = "GeneID") #joining the two for a single table that contains the counts for each gene in the paired end and single end experiments for the first sample.
+
+#graphing the paired end against the single end for one sample across all genes
+ggplot(data = combined_test, aes(x = pull(combined_test, 2), y = pull(combined_test, 3)), add = "reg.line") +
+  geom_point() +
+  labs(title = (colnames(Sample1PE)[2]), y = "Single-End", x = "Paired-End") + #creates the x and y labels 
+  theme_pubr() +
+  geom_abline(slope = 1, intercept = 0)
+
+```
+
+### *Loop through all the rows of data*
+
+Now we can loop through all of the data to determine the correlation across all of the data. The test displayed the correlation visually, but analyzing the same number of graphs as samples present would be difficult and time consuming. The creation of the graph is still present but commented out to prevent the overuse of computational overhead. Instead, this chunk determines the pearson correlation coefficient for each comparison and appends that to a data frame so the collection of coefficients can be used for overall data analysis.
+
+```{r Sample-correlation}
+SampleID <- c() #This will hold the sample id for each iteration of the loop
+pearsonSample <- c() #This will hold the pearson correlation coefficient for each iteration of the loop
+spearmanSample <- c()
+#this loop performs the above comparison for all of the samples
+#begins at 2 because the first row is the Gene ID and that is needed in every comparison
+for(i in 2:170) {
+  SamplePE <- dplyr::select(matchedPE, 1, all_of(i))
+  SampleSE <- dplyr::select(matchedSE, 1, all_of(i))
+  combined_holder <- left_join(SamplePE, SampleSE, by = "GeneID")
+  
+  #The following chunk prints out a comparison graph for every sample. I have it commented out because I have 185 samples and I don't need a graph for all of them. You are welcome to uncomment it but I only recommend that if you have a small number of samples or need to look at comparisons of specific samples.
+  
+  #print(ggplot(data = combined_holder, aes(x = (pull(combined_holder, 2)), y = (pull(combined_holder, 3)))) +
+  #  geom_point() +
+  #  labs(title = (colnames(SamplePE)[2]), y = "Single-End", x = "Paired-End") +
+  #  geom_smooth(method = "lm", se = FALSE) +
+  #  theme_pubr()
+
+  SampleID <- append(SampleID, colnames(SamplePE)[2]) #This adds the sample ID to a pre-made vector
+  pearson <- rcorr(pull(combined_holder, 2), pull(combined_holder, 3), type = "pearson") #determines the pearson correlation coefficient for this sample
+  spearman <- rcorr(pull(combined_holder, 2), pull(combined_holder, 3), type = "spearman")
+  pearsonSample <- append(pearsonSample, pearson$r[3]) #adds the pearson correlation coefficient to a pre-made vector
+  spearmanSample <- append(spearmanSample, spearman$r[3])
+}
+PearsonSample <- data.frame(SampleID, pearsonSample) #combines the previous two vectors into a data frame where each sample is associated with its correlation value
+SpearmanSample <- data.frame(SampleID, spearmanSample)
+
+summary(PearsonSample)
+summary(SpearmanSample)
+
+sampleextremes <- matrix(c(slice_min(PearsonSample, pearsonSample), slice_max(PearsonSample, pearsonSample), slice_min(SpearmanSample, spearmanSample), slice_max(SpearmanSample, spearmanSample)), ncol = 2)
+colnames(sampleextremes) <- c("Pearson", "Spearman")
+rownames(sampleextremes) <- c("Sample-min", "Minimum", "Sample-max", "Maximum")
+sampleextremes
+```
+
+The Pearson correlation coefficients summary shows that the comparison between each sequencing method within a sample is not highly variable, with the lowest correlation still being above 0.97. The Spearman correlations so very similar results. This will be further analyzed by looking at the trends in sample data.
+
+## **Gene Comparison** {.tabset .tabset-pills}
+
+This section compares the single end results to the paired end results across all samples for a given gene. This allows us to see the variation between the two sequencing methods for each gene. This is where we expect to see the most variation due to multimapping. This section also requires pivoting the isolated data as all data associated with one gene is contained in a row.
+
+### *Test analysis on the first gene*
+
+This correlation compares one single gene across all samples between single end and paired end. This allows us to see how each sequencing method differs for each specific gene. The test is first done to make sure that this code works with the data used, and to provide a framework to look at specific genes of interest that may arise later in the analysis.
+
+```{r Gene-correlation-test, results = 'hide'}
+#Isolating the data for the comparison
+Gene1PE <- dplyr::slice(matchedPE, 1) #Isolates only the first row of the paired-end data(the first gene)
+Gene1PE <- pivot_longer(data = Gene1PE, #create a three column data table containing the GeneID, the Sample, and the count
+             cols = -GeneID,
+             names_to  = "Sample",
+             values_to = "PE")
+Gene1SE <- slice(matchedSE, 1) #Isolates the first row (first gene) of the single-end data
+Gene1SE <- pivot_longer(data = Gene1SE, #create a three column data table containing the GeneID, the Sample, and the count
+             cols = -GeneID,
+             names_to = "Sample",
+             values_to = "SE")
+Join_test <- left_join(Gene1PE, Gene1SE, by = c("Sample", "GeneID")) #join the two above tables so that each gene has one sample and two counts (a single end and paired end count)
+Join_test <- dplyr::select(Join_test, 2:4) #removes the gene ID from the table 
+
+#graphing the data for one gene across all samples
+#x axis is paired end and y axis is single end
+ggplot(data = Join_test, aes(x = PE, y = SE)) +
+  geom_point() +
+  labs(title = Gene1PE$GeneID[1], x = "Paired-End", y = "Single-End") + 
+  theme_pubr() +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+### *Looping through analysis for each gene in the data set*
+
+Now we can loop through all of the genes in the data set to determine the correlation between each gene in both data sets. In the test, the graph is created to show the correlation visually and that graph is created here, but commented out, as it creates upwards of 14,000 graphs which would be difficult and time consuming to analyze individually. In this looping, the pearson correlation coefficient is determined for each comparison and it is the collection of those coefficients for each gene that will be used to perform the overall analysis.
+
+```{r Gene-correlation, echo = TRUE}
+pearsonGenes <- c() #This vector will get the pearson correlation coefficient for each iteration of the loop
+spearmanGenes <- c()
+GeneID <- c() #This vector will hold the gene IDs for each loop
+
+#This loop will perform the above comparison on all of the genes.
+for(i in 1:14054) {
+  GenePE <- dplyr::slice(matchedPE, i)
+  GenePE <- pivot_longer(data = GenePE,
+                         cols = -GeneID,
+                         names_to = "Sample",
+                         values_to = "PE")
+  GeneSE <- dplyr::slice(matchedSE, i)
+  GeneSE <- pivot_longer(data = GeneSE,
+                         cols = -GeneID,
+                         names_to = "Sample",
+                         values_to = "SE")
+  name <- GenePE$GeneID[1]
+  Join_holder <- left_join(GenePE, GeneSE, by = c("Sample", "GeneID"))
+  Join_holder <- dplyr::select(Join_holder, 2:4)
+  Join_holder$SE <- replace_na(Join_holder$SE, 0)
+  
+  #The following will print off a comparison point graph for every gene. For me, that was upwards of 14,000 graphs so I wrote it but have it commented out. You are welcome to uncomment and print the graphs but it is my recommendation that you don't.
+  
+  #print(ggplot(data = Join_holder, aes(x = (pull(Join_holder, 2)), y = (pull(Join_holder, 3)))) +
+  #  geom_point() +
+  #  labs(title = name, x = "Paired-End", y = "Single-End") +
+  #  geom_smooth(method = "lm", se = FALSE) +
+  #  theme_pubr()
+
+  GeneID <- append(GeneID, name) #adding the gene name to a pre-made vector
+  peaGenes <- rcorr(pull(Join_holder, 2), pull(Join_holder, 3), type = "pearson") #determining the pearson correlation coefficient
+  pearsonGenes <- append(pearsonGenes, peaGenes$r[3]) #adding the correlation coefficient to a pre-made vector
+  spearGenes <- rcorr(pull(Join_holder, 2), pull(Join_holder, 3), type = "spearman")
+  spearmanGenes <- append(spearmanGenes, spearGenes$r[3])
+}
+PearsonGenes <- data.frame(GeneID, pearsonGenes) #combining the two previous vectors into one data frame
+SpearmanGenes <- data.frame(GeneID, spearmanGenes)
+
+summary(PearsonGenes)
+summary(SpearmanGenes)
+
+geneextremes <- matrix(c(slice_min(PearsonGenes, pearsonGenes), slice_max(PearsonGenes, pearsonGenes), slice_min(SpearmanGenes, spearmanGenes), slice_max(SpearmanGenes, spearmanGenes)), ncol = 2)
+colnames(geneextremes) <- c("Pearson", "Spearman")
+rownames(geneextremes) <- c("GeneID-min", "Minimum", "GeneID-max", "Maximum")
+geneextremes
+```
+
+The correlation summary shows high variability caused by outliers, as most of the data still lies above values that indicate significant correlation. A similar pattern is seen in the spearman correlation data. These outliers will be looked into further.
+
+## **Trends in Gene and Sample Comparison**
+
+In this section, two graphs are made which show the distribution of the pearson correlation coefficient for the data set. This allows us to see how many samples or genes fit into the category of highly correlated and how many fit into the category of low correlation. These low correlated genes are of interest as these are most likely the genes where typical experiments will find higher levels of multimapping.
+
+```{r Correlation-trends}
+#Distribution of correlation coefficients of Sample analysis
+PS <- ggplot(PearsonSample, aes(x = pearsonSample), pty = "s") +
+  geom_histogram(binwidth = 0.001) +
+  labs(title = "Correlation Distribution - Sample", x = "Pearson Correlation Coefficient", y = "Frequency") +
+  theme_pubr(base_size = 17)
+
+SS <- ggplot(SpearmanSample, aes(x = spearmanSample), pty = "s") +
+  geom_histogram(binwidth = 0.001) +
+  labs(title = "Correlation Distribution - Sample", x = "Spearman Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+
+#Distribution of correlation coefficients of gene analysis
+PG <- ggplot(PearsonGenes, aes(x = pearsonGenes), pty = "s") +
+  geom_histogram(binwidth = 0.01) +
+  labs(title = "Correlation Distribution - Gene", x = "Pearson Correlation Coefficient", y = "Frequency") +
+  theme_pubr(base_size = 17)
+
+SG <- ggplot(SpearmanGenes, aes(x = spearmanGenes), pty = "s") +
+  geom_histogram(binwidth = 0.01) +
+  labs(title = "Correlation Distribution - Gene", x = "Spearman Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+
+#Combining the two groups into one figure
+ggarrange(PS, SS, PG, SG, ncol = 2, nrow = 2)
+ggarrange(PS, PG, ncol = 2)
+```
+
+Here we pivot the rows of each of the pearson data tables to prepare them to be combined so they can be plotted on the same graph. 
+```{r}
+PearsonGenes %>%
+  mutate(Type = "Genes") %>%
+  rename(pearson = pearsonGenes) -> PearsonGenes
+PearsonSample %>%
+  mutate(Type = "Samples") %>%
+  rename(pearson = pearsonSample) -> PearsonSample
+```
+
+Here we combine the two and plot them together. 
+```{r}
+AllPearson <- data.frame(Pearson = append(PearsonGenes$pearson, PearsonSample$pearson), Type = append(PearsonGenes$Type, PearsonSample$Type))
+
+ggplot(AllPearson, aes(x = Type, y = Pearson)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  theme_pubr(base_size = 18)
+```
+
+These two graphs show that when comparing the single end and paired end data within each sample, there is very little difference overall. But when we compare the single end data and the paired end data for each gene across all samples, we can see that while most of the genes are highly correlated, there is also a large subset of genes that are very different between samples.
+
+#### ***High and Low Correlations*** {.tabset .tabset-pills}
+
+This section will display the genes and sample comparisons that have the lowest and highest correlations. This will show the range of correlation in the sample comparisons and gene comparisons.
+
+##### *Sample Comparisons*
+
+The lowest and highest correlated samples were determined from the extremes tables. These correlations allow us to see the variability in the range of correlations present in our data set.
+
+```{r Min-and-max-sample-correlations, message=FALSE, figure.width = 10}
+###################################
+##Hard-coding -> sample selection##
+###################################
+
+#Lowest pearson correlation coefficient
+SampleLowPE <- dplyr::select(matchedPE, GeneID, PB367.68) #isolating the PE lowest corr sample
+SampleLowSE <- dplyr::select(matchedSE, GeneID, PB367.68) #isolating the SE lowest corr sample
+SampleLowPESE <- left_join(SampleLowPE, SampleLowSE, by = "GeneID") #joining both of them together for graphing
+LowSGraph <- ggplot(data = SampleLowPESE, aes(x = pull(SampleLowPESE, 2), y = pull(SampleLowPESE, 3))) +
+  geom_point() + 
+  labs(title = "Lowest Pearson", x = "Paired-End", y = "Single-End") +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_pubr()
+#Highest pearson correlation coefficient
+SampleHighPE <- dplyr::select(matchedPE, GeneID, PB362.45) #isolating the PE highest corr sample
+SampleHighSE <- dplyr::select(matchedSE, GeneID, PB362.45) #isolating the SE highest corr sample
+SampleHighPESE <- left_join(SampleHighPE, SampleHighSE, by = "GeneID") #joining both together for graphing
+HighSGraph <- ggplot(data = SampleHighPESE, aes(x = pull(SampleLowPESE, 2), y = pull(SampleHighPESE, 3))) +
+  geom_point() +
+  labs(title = "Highest Pearson", x = "Paired-End", y = "Single-End") +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_pubr()
+#Lowest spearman correlation coefficient
+SampleLowPES <- dplyr::select(matchedPE, GeneID, PB358.07) #isolating the PE lowest corr sample
+SampleLowSES <- dplyr::select(matchedSE, GeneID, PB358.07) #isolating the SE lowest corr sample
+SampleLowPESES <- left_join(SampleLowPES, SampleLowSES, by = "GeneID") #joining both of them together for graphing
+LowSGraphS <- ggplot(data = SampleLowPESES, aes(x = pull(SampleLowPESES, 2), y = pull(SampleLowPESES, 3))) +
+  geom_point() + 
+  labs(title = "Lowest Spearman", x = "Paired-End", y = "Single-End") +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_pubr()
+#Highest pearson correlation coefficient
+SampleHighPES <- dplyr::select(matchedPE, GeneID, PB360.21) #isolating the PE highest corr sample
+SampleHighSES <- dplyr::select(matchedSE, GeneID, PB360.21) #isolating the SE highest corr sample
+SampleHighPESES <- left_join(SampleHighPES, SampleHighSES, by = "GeneID") #joining both together for graphing
+HighSGraphS <- ggplot(data = SampleHighPESES, aes(x = pull(SampleLowPESES, 2), y = pull(SampleHighPESES, 3))) +
+  geom_point() +
+  labs(title = "Highest Spearman", x = "Paired-End", y = "Single-End") +
+  geom_abline(slope = 1, intercept = 0) +
+  theme_pubr()
+
+ggarrange(HighSGraph, HighSGraphS, LowSGraph, LowSGraphS)
+```
+
+The sample correlations shown are not that different, further showing how there is little variation between the sequencing methods for each sample as a whole.
+
+##### *Gene Comparisons*
+
+The lowest and highest correlated genes were determined using the slice_min and slice_max functions above. The gene IDs for both of those genes were then used to determine the gene name and description via the biomaRt package in order to annotate the plots. These comparisons allow for the visualization of the range correlations present in the genes.
+
+```{r Min-and-max-gene-correlations, message=FALSE, warning=FALSE}
+#################################
+##Hard-coding -> gene selection##
+#################################
+
+#Determining gene name and description for both genes
+getBM(attribute = c('ensembl_gene_id', 'external_gene_name', 'description'), filters = 'ensembl_gene_id', values = c("ENSMUSG00000094708", "ENSMUSG00000001506", "ENSMUSG00000048108"), mart = ensembl)
+
+#lowest pearson correlation coefficient
+GeneLowPE <- filter(matchedPE, matchedPE$GeneID == "ENSMUSG00000094708") #filtering PE for the gene known to have the lowest correlation 
+GeneLowPE <- pivot_longer(data = GeneLowPE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "PE") 
+GeneLowSE <- filter(matchedSE, matchedSE$GeneID == "ENSMUSG00000094708") #filtering SE for the gene known to have the lowest correlation
+GeneLowSE <- pivot_longer(data = GeneLowSE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "SE")
+LowPESE <- left_join(GeneLowPE, GeneLowSE, by = c("Sample", "GeneID")) #joining the data for graphing
+LowPESE <- dplyr::select(LowPESE, 2:4) #removing the column with the repeated GeneID
+Low <- ggplot(data = LowPESE, aes(x = SE, y = PE), asp = 1) +
+  geom_point() +
+  labs(title = "Lowest Pearson", subtitle = "Gm10359: Processed Pseudogene", x = "Single-End", y = "Paired-End") +
+  theme_pubr() + 
+  geom_abline(slope = 1, intercept = 0) +
+  theme(plot.subtitle = element_text(size = 10))
+
+#Highest pearson correlation coefficient 
+GeneHighPE <- filter(matchedPE, matchedPE$GeneID == "ENSMUSG00000001506") #filtering PE for the highest corr gene
+GeneHighPE <- pivot_longer(data = GeneHighPE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "PE")
+GeneHighSE <- filter(matchedSE, matchedSE$GeneID == "ENSMUSG00000001506") #filtering SE for the highest corr gene
+GeneHighSE <- pivot_longer(data = GeneHighSE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "SE")
+HighPESE <- left_join(GeneHighPE, GeneHighSE, by = c("Sample", "GeneID")) #joining the data for graphing
+HighPESE <- dplyr::select(HighPESE, 2:4) #removing the column with the repeated GeneID
+High <- ggplot(data = HighPESE, aes(x = SE, y = PE), pty = "s") +
+  geom_point() +
+  labs(title = "Highest Pearson", subtitle = "Col1a1: Collagen Type I alpha 1", x = "Single-End", y = "Paired-End") +
+  theme_pubr()+
+  geom_abline(slope = 1, intercept = 0) +
+  theme(plot.subtitle = element_text(size = 10))
+
+#lowest spearman correlation coefficient
+GeneLowPES <- filter(matchedPE, matchedPE$GeneID == "ENSMUSG00000094708") #filtering PE for the gene known to have the lowest correlation 
+GeneLowPES <- pivot_longer(data = GeneLowPES, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "PE") 
+GeneLowSES <- filter(matchedSE, matchedSE$GeneID == "ENSMUSG00000094708") #filtering SE for the gene known to have the lowest correlation
+GeneLowSES <- pivot_longer(data = GeneLowSES, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "SE")
+LowPESES <- left_join(GeneLowPES, GeneLowSES, by = c("Sample", "GeneID")) #joining the data for graphing
+LowPESES <- dplyr::select(LowPESES, 2:4) #removing the column with the repeated GeneID
+LowS <- ggplot(data = LowPESES, aes(x = SE, y = PE), asp = 1) +
+  geom_point() +
+  labs(title = "Lowest Spearman", subtitle = "Gm10359: Processed Pseudogene", x = "Single-End", y = "Paired-End") +
+  theme_pubr() + 
+  geom_abline(slope = 1, intercept = 0) +
+  theme(plot.subtitle = element_text(size = 9))
+
+#Highest spearman correlation coefficient 
+GeneHighPES <- filter(matchedPE, matchedPE$GeneID == "ENSMUSG00000048108") #filtering PE for the highest corr gene
+GeneHighPES <- pivot_longer(data = GeneHighPES, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "PE")
+GeneHighSES <- filter(matchedSE, matchedSE$GeneID == "ENSMUSG00000048108") #filtering SE for the highest corr gene
+GeneHighSES <- pivot_longer(data = GeneHighSES, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "SE")
+HighPESES <- left_join(GeneHighPES, GeneHighSES, by = c("Sample", "GeneID")) #joining the data for graphing
+HighPESES <- dplyr::select(HighPESES, 2:4) #removing the column with the repeated GeneID
+HighS <- ggplot(data = HighPESES, aes(x = SE, y = PE), pty = "s") +
+  geom_point() +
+  scale_x_continuous(limits = c(0,8050)) +
+  labs(title = "Highest Spearman", subtitle = "Tmem72: Transmembran Protein 72", x = "Single-End", y = "Paired-End") +
+  theme_pubr() +  
+  geom_abline(slope = 1, intercept = 0) +
+  theme(plot.subtitle = element_text(size = 10))
+
+ggarrange(High, HighS, Low, LowS)
+```
+
+The highest correlations (B) shows obvious adherence to the regression line, which is fairly close to the x=y line, showing that for this gene, there is little difference between single end and paired end sequencing. This seems reasonable for the data as this gene is a Transmembrane 9 Superfamily member 5, something that may be more highly conserved across samples. The gene with the lowest correlation (A) shows very low reads for paired end while showing high reads for single end. This could be caused by multimapping, as this gene is identified in this version as a predicted gene product. Upon further research in to more recent versions, this gene product is a pseudogene of glyceraldehyde-3-phosphate dehydrogenase (Gapdh).
+
+We can create the same graph above for Gapdh to compare it with the Gm10359 graph. This will allow us to see if there is a difference in the allocation of reads to the protein coding gene between paired-end and single-end when single-end has such a high allocation to the pseudogene.
+```{r Gapdh-correlation}
+#################################
+##Hard-coding -> gene selection##
+#################################
+
+#Gapdh correlation graph
+GPE <- filter(PE, GeneID == "ENSMUSG00000057666") #filtering PE for Rps7
+GPE <- pivot_longer(data = GPE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "PE")
+GSE <- filter(SE, GeneID == "ENSMUSG00000057666") #filtering SE for Rps7
+GSE <- pivot_longer(data = GSE, #pivoting the data so expression counts and samples are two columns
+                    cols = -GeneID,
+                    names_to = "Sample",
+                    values_to = "SE")
+LPESE <- left_join(GPE, GSE, by = c("Sample", "GeneID")) #joining PE and SE into one table
+LPESE <- dplyr::select(LPESE, 2:4) #removing the gene ID column
+ggplot(data = LPESE, aes(x = SE, y = PE), asp = 1) +
+  geom_point() +
+  labs(title = "Glyceraldehyde-3-phosphate dehydrogenase (Gadph)", x = "Single-End", y = "Paired-End") +
+  theme_pubr() +
+  geom_abline(slope = 1, intercept = 0) #adding an X = y slope line
+```
+
+Looking further into the Gapdh-Gm10359 connection, we can add the read counts for each sequencing method together. All of the paired-end counts aligned to both genomic features are added and plotted against all of the single-end counts aligned to both genomic features. This allows us to see if alignment to Gm9493 accounts for the lack of single-end data for Gapdh.
+```{r Gapdh-correlation-part-2}
+#Gapdh + Gm10359 correlation graph
+allLPE <- inner_join(GPE, GeneLowPE, by = "Sample") #Joining Rps7 and Gm9493 PE data
+allLPE <- mutate(allLPE, CombinedP = (PE.x + PE.y)) #Adding PE counts for both genetic features
+allLSE <- inner_join(GSE, GeneLowSE, by = "Sample") #Joining Rps7 and Gm9493 SE data
+allLSE <- mutate(allLSE, CombinedS = (SE.x + SE.y)) #Adding SE counts for both genetic features
+
+allL <- inner_join(allLPE, allLSE, by = "Sample")  #Joining the PE and SE data for graphing
+ggplot(allL, aes(x = CombinedS, y = CombinedP)) +
+  geom_point() +
+  labs(title = "Gm10359 + Gapdh Expression Counts", x = "Single-end", y = "Paired-end") +
+  theme_pubr() +
+  geom_abline(slope = 1, intercept = 0) #adding an X = y slope line
+```
+
+## **Determining Function of Significant Genes**
+
+Using the Ensemble data base, the gene IDs associated with the significant genes determined previously will be input to determine their gene name and function (if applicable). This will further the understanding as to what kind of genes are significantly impacted by the difference in sequencing method. Then analysis of the different groups of significant genes can be performed to determine what types of genes are in each group.
+
+To start, the biotypes must be determined for each of the data sets of interest, such as the matched data set and the two unique data sets, performed in the following code chunk.
+
+```{r Biotype-determination, results = "hide"}
+#Collecting biotypes for the overlapping reads between the two sequencing method
+biotypes_matched <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = matched$GeneID, mart = ensembl)
+
+#Collecting biotypes for the reads unique to each sequencing method
+biotypesUP <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = uniquePE$GeneID, mart = ensembl)
+biotypesUS <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = uniqueSE$GeneID, mart = ensembl)
+```
+
+In the next code chunk, count matrices can be made to view the frequencies of each biotype in the data set as well as compare the biotype levels between data sets.
+
+```{r Biotype-counts}
+#Getting counts of matched biotypes
+biotypes_matched %>%
+  count(gene_biotype, name = "Matched") -> mBiotypexCount
+
+#Getting counts of unique paired-end and single-end biotypes
+biotypesUP %>%
+  count(gene_biotype, name = "Paired") -> upBiotypexCount
+biotypesUS %>%
+  count(gene_biotype, name = "Single") -> usBiotypexCount
+```
+
+These count matrices can be used to visualize the data individually in this final code chunk.
+
+```{r Biotype-frequency-plots, fig.height = 10}
+#visualization of matched biotype data 
+MBGraph <- ggplot(data = mBiotypexCount, aes(y = gene_biotype, x = Matched)) +
+  geom_col() +
+  labs(title = "Frequency of Each Biotype in the Matched Data", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+#visualization of paired-end biotype counts
+UPBGraph <- ggplot(data = upBiotypexCount, aes(y = gene_biotype, x = Paired)) +
+  geom_col() +
+  labs(title = "Frequency of Each Biotype in Uniuqe Paired-End Data", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+#visualization of single-end biotype counts
+USBGraph <- ggplot(data = usBiotypexCount, aes(y = gene_biotype, x = Single)) +
+  geom_col() +
+  labs(title = "Frequency of Each Biotype in Unique Single-End Data", x = "Frequency", y = "Biotype") +
+  theme_pubr()
+ggarrange(MBGraph, UPBGraph, USBGraph, ncol = 1, nrow = 3)
+```
+
+These graphics show the high levels of pseudogenes, especially processed pseudogenes, present in the unique single end data as compared to the higher level of protein coding genes unique to the paired end data.
+
+The biotype counts for each subset of data can be combined to display them next to each other. This allows for comparison of the biotypes that are present in certain subsets that aren't present in others and to easily compare the levels of certain biotypes between each subset.
+
+```{r Biotype-frequency-table, message = FALSE}
+#Joining all of the data in each subset
+Allbiotypes <- full_join(mBiotypexCount, upBiotypexCount, by = "gene_biotype")
+Allbiotypes <- full_join(Allbiotypes, usBiotypexCount, by = "gene_biotype")
+#renaming the biotype column for neater graphing
+Allbiotypes <- dplyr::rename(Allbiotypes, Biotype = gene_biotype)
+#replacing NAs with 0 for display purposes
+Allbiotypes$Matched <- replace_na(Allbiotypes$Matched, 0)
+Allbiotypes$Paired <- replace_na(Allbiotypes$Paired, 0)
+Allbiotypes$Single <- replace_na(Allbiotypes$Single, 0)
+#pivoting the data to allow for graphing with ggplot
+GraphAllBiotypes <- pivot_longer(Allbiotypes, 
+                                 cols = 2:4,
+                                 names_to = "Filter",
+                                 values_to = "Frequency")
+
+#Isolating all of the pseudogenes categories and combining them into one overarching pseudogene 
+pseud <- filter(Allbiotypes, str_detect(Biotype, "pseudogene")) #isolating all biotypes where the phrase 'pseudogene' is detected
+pseudog <- data.frame(Biotype = "pseudogene", Matched = sum(pseud$Matched), Paired = sum(pseud$Paired), Single = sum(pseud$Single)) #creating a general pseudogene category
+allelse <- filter(Allbiotypes, str_detect(Biotype, "pseudogene") == FALSE) #isolating anything that isn't a pseudogene
+Allbiotypes <- full_join(pseudog, allelse)#combining everything back together
+
+#Displaying the data in a table
+formattable(Allbiotypes,
+            list(Paired = formatter("span", style = x ~ formattable::style(color = ifelse(x > 100, "red", "black"))), 
+                 Single = formatter("span", style = x ~ formattable::style(color = ifelse(x == 436 | x == 107, "red", "black")))))
+```
+
+We can filter out all three major biotype categories into their own data tables
+```{r}
+pseudos <- filter(Allbiotypes, str_detect(Allbiotypes$Biotype, "pseudogene"))
+prots <- filter(Allbiotypes, str_detect(Allbiotypes$Biotype, "protein")) 
+rnas <- filter(Allbiotypes, str_detect(Allbiotypes$Biotype, "protein") == FALSE & str_detect(Allbiotypes$Biotype, "pseudogene") == FALSE)
+```
+
+With the filtered data tables, we can determine the sum of the counts for each of the major three biotype categories that we have determined.
+```{r}
+pseudos %>%
+  add_row(Biotype = "Pseudogenes", Matched = sum(pseudos$Matched), Paired = sum(pseudos$Paired), Single = sum(pseudos$Single)) -> pseudos
+prots %>%
+  add_row(Biotype = "Protein Coding", Matched = sum(prots$Matched), Paired = sum(prots$Paired), Single = sum(prots$Single)) -> prots
+rnas %>%
+  add_row(Biotype = "Small RNAs", Matched = sum(rnas$Matched), Paired = sum(rnas$Paired), Single = sum(rnas$Single)) -> rnas
+```
+
+These three categories can then be joined again and the quantities of each biotype can be displayed in a table.
+```{r}
+BiotypeCats <- full_join(rnas[18,], pseudos[2,], by = c("Biotype", "Matched", "Paired", "Single"))
+BiotypeCats <- full_join(BiotypeCats, prots[2,], by = c("Biotype", "Matched", "Paired", "Single")) 
+BiotypeCats
+```
+
+The tables show that SE analysis uniquely maps to a large quantity of pseudogenes. Hypergeomentric testing using an online calculator (<https://systems.crump.ucla.edu/hypergeometric/>). The matched data was used as the universe, with the protein-coding or pseudogene quantities within that data for the universe successes. The unique PE or unique SE data were the sample and the respective quantities of protein coding genes or pseudogenes were the sample successes. It showed that pseudogenes are over-represented 1.34 fold (p = 1.34 E -55), which is why the SE pseudogenes are highlighted in red on the table. In a similar fashion, hypergeometric testing was performed on the protein coding genes in PE analysis and they were found to be over-represented 2.7 fold (p = 2.74 E -130), showing that paired-end analysis uniquely maps more protein coding genes than would be expected should the sequencing methods be equal.
+
+This can also be shown using a Venn diagram.
+```{r}
+Venn <- list( PE = PE$GeneID, SE = SE$GeneID)
+
+#plot the euler diagram (circles are sized to show relative quantities) with the quantity shown on the diagram
+plot(euler(Venn), quantities = list(TRUE, cex = 2), fill = c("coral2", "cyan3", "lavenderblush"), alpha = 0.5, main = "Gene Overlap in SE and PE Data", labels = list(col = "black", font = 2, cex = 2), )
+```
+
+
+## **Analyzing Expression Counts** {.tabset .tabset-pills}
+
+### *Analysis of Expression Levels of Each Biotype*
+
+We can analyze the expression levels of each biotype by integrating the biotypes determined into the expression matrix. This is done by adding a column to the expression matrix that contains the biotype data determined above. This is done on the matched data. When the biotype data is integrated into the expression data, the data can then be subset by biotype and expression levels determined. From there, biotypes that show interesting differences in expression can be isolated and given further analysis to see the causes of the differences.
+
+```{r Biotype-and-expression-joining}
+#Rename the biotype data to streamline the join
+biotypes_matched <- dplyr::rename(biotypes_matched, GeneID = ensembl_gene_id)
+#Joining the expression data with the biotype data
+MAxBiotype <- inner_join(matched, biotypes_matched, by = "GeneID")
+#renaming the biotype column for cleaner visualization
+MAxBiotype <- dplyr::rename(MAxBiotype, Biotype = gene_biotype)
+```
+
+### *Determining Median of Expression Levels*
+
+The expression data on its own is too variable with too many points to reasonably be able to discern anything from a visual, so the median of expression per gene can be determined and then plotted by gene biotype. This will not only summarize the data so that it can be visualized, but also provide a general look at the expression differences between biotypes.
+
+First, the data is upper-quartile normalized. 
+```{r}
+#taking the upper quartile of each column (samples)
+PEq75 <- apply(matchedPE[2:186], 2, quantile, 0.75)
+#function that will perform the normalization
+ratio <- mean(PEq75)/PEq75
+#applying the normalizing function to each row
+NormPE <- sweep(matchedPE[2:186], 2, ratio, FUN="*")
+#adding back in the gene id column
+NmatchedPE <- tibble(matchedPE[1], NormPE)
+
+#taking the upper-quartile of each column (samples)
+SEq75 <- apply(matchedSE[2:186], 2, quantile, 0.75)
+#function that will perform normalization
+ratio <- mean(SEq75)/SEq75
+#applying the normalizing function to each numeric row of data
+NormSE <- sweep(matchedSE[2:186], 2, ratio, FUN="*")
+#adding back in the gene ids (characters)
+NmatchedSE <- tibble(matchedSE[1], NormSE)
+```
+
+Then, the median of expression for each gene is determined. 
+```{r, cache = TRUE, cache.lazy = FALSE}
+#creating the medians matrix for PE data
+PEbiotypes <- getBM(attributes=c('ensembl_gene_id', 'gene_biotype'),filters = 'ensembl_gene_id', values = NmatchedPE$GeneID, mart = ensembl) #determining biotypes for the PE expression matrix
+PEbiotypes <- dplyr::rename(PEbiotypes, GeneID = ensembl_gene_id) #renaming the gene ID column for easy joining
+PExBiotype <- inner_join(NmatchedPE, PEbiotypes, by = "GeneID") #joining the expression matrix and biotypes
+PExBiotype %>%
+  rowwise() %>%
+  mutate(MedianPaired = list(apply(PExBiotype[, c(2:186)], 1, median))) -> PExBiotype #adding a column containing the median for each row
+
+#creating the medians matrix for SE data
+SEbiotypes <- getBM(attributes=c('ensembl_gene_id', 'gene_biotype'),filters = 'ensembl_gene_id', values = NmatchedSE$GeneID, mart = ensembl) #determining biotypes for the SE expression matrix
+SEbiotypes <- dplyr::rename(SEbiotypes, GeneID = ensembl_gene_id) #renaming the gene ID column for easy joining
+SExBiotype <- inner_join(NmatchedSE, SEbiotypes, by = "GeneID") #combining the expression matrix with the biotypes
+SExBiotype %>%
+  rowwise() %>%
+  mutate(MedianSingle = list(apply(SExBiotype[, c(2:186)], 1, median))) -> SExBiotype #adding a column containing the median for each row
+#Combining the SE and PE expression/biotype/medians matrices
+ExpressionxMedians <- inner_join(PExBiotype, SExBiotype, by = "GeneID")
+```
+
+The resulting table 'ExpressionxMedians' contains the gene ID, the PE expression counts for each sample, the SE expression counts for each sample, the median of the PE expression counts, the median of the SE expression counts, and the gene biotype
+
+With the whole combined data, we can then isolate the median and biotype data to display the expression medians for each biotype, allowing us to see the estimated expression counts determined for biotype by the two different sequencing methods.
+
+```{r Median-analysis, fig.width = 10}
+#Isolating the expression medians along with all of the identifying data prevents the use of too much computational overhead when performing these functions so they will be isolated into a Medians data frame.
+Medians <- data.frame(GeneID = ExpressionxMedians$GeneID, Biotype = ExpressionxMedians$gene_biotype.x, Paired = ExpressionxMedians$MedianPaired[1], Single = ExpressionxMedians$MedianSingle[1]) #isolating the medians and biotypes with a paired and single column
+names(Medians)[3] <- 'Paired' #Changing the paired end medians column name
+names(Medians)[4] <- 'Single' #changing the single end medians column name
+
+Medians$Biotype <- str_replace(Medians$Biotype, ".+pseudogene", "pseudogene") #creating a pseudogene category that encapsulates all of the smaller pseudogene categories
+
+#graphing the medians of expression against biotypes
+Medians %>%
+  pivot_longer(cols = -c(GeneID, Biotype), #pivoting the data so the sequencing method is a data value
+               names_to = "SeqMethod",
+               values_to = "ExpressionMedian") %>%
+  ggplot(aes(y = Biotype, x = ExpressionMedian, fill = SeqMethod)) + #plotting the expression median by biotype between both sequencing methods
+    geom_boxplot() +
+    scale_x_log10() +
+    labs(title = "Median of Expression for each Gene by Biotype", x = "Median of Expression", y = "Biotype", fill = "Sequencing Method") +
+    theme_pubr(legend = "right")
+```
+
+Most categories show slightly lower expression medians in PE data, indicating higher expression estimates determined by SE analysis. Certain categories show a large difference in expression medians, such as miRNA and snoRNA, where PE estimates are much lower than SE estimates, and pseudogenes, where PE data is on average lower but shows more outliers in a similar range as SE data. This supports the idea that SE analysis output extraneous alignments that are not present in PE data and are therefore potential mis-alignments.
+
+As done previously, we separate the median values into the three major biotype categories present in the sample and we can then plot based on these categories. 
+```{r}
+for(i in 1:nrow(Medians)){
+  if(str_detect(Medians[i,2], "rotein") == TRUE) {
+    Medians[i,2] <- "Protein Coding"
+  } else if (str_detect(Medians[i,2], "seudogene")) {
+    Medians[i,2] <- "Pseudogene"
+  } else {
+    Medians[i,2] <- "Small RNA"
+  }
+}
+
+Medians %>%
+  pivot_longer(cols = -c(GeneID, Biotype), names_to = "SeqMethod", values_to = "ExpressionMedian") %>%
+  ggplot(aes(x = log1p(ExpressionMedian), y = Biotype, fill = SeqMethod)) +
+    geom_violin() +
+    geom_boxplot(width = 0.1, position=position_dodge(0.9)) +
+    theme_pubr(base_size = 18) +
+  
+```
+
+## **Over-representation Analysis**
+
+Over-representation analysis can show the genes involved in pathways and biological processes that are present at higher levels than would be expected should the sample be representative of the whole.
+
+```{r Overrepresentation-analysis, cache = TRUE}
+#Creating a 'universe' of genes that has every single gene identified in both single- and paired-end sequencing
+AllGenes <- full_join(PE, SE, by = "GeneID")
+
+#using the gost() function of gProfiler2 to perform over-representation analysis
+gProfPE <- gost(query = uniquePE$GeneID, organism = "mmusculus", domain_scope = "custom", custom_bg = AllGenes$GeneID, evcodes = TRUE, significant = FALSE)
+gProfSE <- gost(query = uniqueSE$GeneID, organism = "mmusculus", domain_scope = "custom", custom_bg = AllGenes$GeneID, evcodes = TRUE)
+
+#visualizing that data using the gostplot() function of gProfiler2
+gostplot(gProfPE, capped = TRUE, interactive = TRUE)
+gostplot(gProfSE, capped = TRUE, interactive = TRUE)
+```
+
+Over-representation analysis in the previous code chunk of the subsets of data unique to each sequencing method showed no significant results. These unique data sets contain random genes from random pathways as opposed to specific pathways, showing that there is no pathway more likely to experience multimapping or mismapping.
+
+## **Writing Data for Other Analysis**
+  
+In order to determine the differences in single-end and paired-end data in downstream analysis, the unique data will be written to a csv to allow the unique expression matrix to be compared to the unique data from the downstream analysis in question. This csv can be opened in another analysis to compare all of the unique data across the entire analysis pipeline.
+
+```{r Write-unique-out}
+#writing the unique paired-end data to a csv for use in eQTL analysis
+write.csv(uniquePE, 'UniquePEexp.csv')
+#writing the unique single-end data to a csv for use in eQTL analysis
+write.csv(uniqueSE, 'UniqueSEexp.csv')
+#writing the PearsonGenes data frame for STAR analysis
+save(PearsonGenes, file = "PearsonGenes.RData")
+```

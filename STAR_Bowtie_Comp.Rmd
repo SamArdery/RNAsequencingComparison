@@ -1,0 +1,827 @@
+---
+title: "STAR_Bowtie_Comp"
+
+author: "Sam Ardery"
+
+date: "`r Sys.Date()`"
+output: 
+  html_document: 
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: spacelab
+    code_folding: hide 
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+The purpose of the analysis performed in this document is to determine if using STAR and RSEM as the aligner and quantifier with the C57B6 genome with single-end data is able to recapitulate some of the accuracy found when using Bowtie and emase to align and quantify against an 8-way transcriptome. Since the Bowtie to emase pipeline is highly specific to the Diversity Outbred and Collaborative Cross populations, it would make research with these populations more accessible if a commonly used pipeline like STAR to RSEM were effective for these populations. 
+
+# Methods {.tabset .tabset-pills}
+
+## **Packages**
+Take note that the packages are not installed, only loaded. 
+```{r Load-packages setup, include=FALSE}
+library(here)
+library(tidyverse)
+library(biomaRt)
+library(Hmisc)
+library(karyoploteR)
+library(plotly)
+library(ggpubr)
+library(gprofiler2)
+
+#Creating an ensemble mart is essential to obtain the biotypes of the various filtration of genes.
+ensembl <- useMart(biomart="ensembl",host="http://dec2017.archive.ensembl.org","mmusculus_gene_ensembl") #states a data set for use, in this case, the mouse data set
+```
+
+## **Data**
+The data used here is expression and eQTL peak data for paired-end reads aligned with Bowtie and quantified with emase and single-end reads aligned with STAR and quantified with RSEM
+```{r Load-data}
+###############################
+##Hard-coding -> data loading##
+###############################
+
+#Loading paired-end data
+load("/projects/munger-lab/ArderyProject/eQTLRemap/DO_mESC_paired_eQTL_peaks.RData")
+PEpeaks <- peaks
+PEcmd <- cmd
+rm(peaks, cmd)
+load(here("MappingScripts", "TruePEforMapping.RData"))
+rm(covar, exprComBat, exprZ, genoprobs, kinship_loco)
+#Loading single-end data
+load("/projects/munger-lab/ArderyProject/eQTLRemap/DO_mESC_starse_eQTL_peaks.RData")
+SEpeaks <- peaks #renaming peaks to specify sequencing method
+#SEcmd <- cmd
+#SEDatacmd <- DO185_mESC_emase_m4.cmd
+#rm(peaks, cmd, DO185_mESC_emase_m4.cmd) #removing peaks variable to avoid confusion
+load(here("DataCollection", "STARcounts.RData")) 
+load(here("DataCollection", "DataCollection.RData"))
+```
+
+Creating a matched data set will allow for the correlation analysis performed first in the expression analysis. 
+```{r}
+matchedPE <- semi_join(PE, STARcounts, by = "GeneID")
+ids <- matchedPE[1]
+numerics <- as.data.frame(sapply(matchedPE[2:186], as.numeric))
+matchedPE <- as.data.frame(merge(ids, numerics, by = "row.names"))
+matchedPE <- matchedPE[2:187]
+
+matchedSTAR <- semi_join(STARcounts, PE, by = "GeneID")
+ids <- matchedSTAR[1]
+numerics <- as.data.frame(sapply(matchedSTAR[2:186], as.numeric))
+matchedSTAR <- as.data.frame(merge(ids,numerics, by = "row.names")) 
+matchedSTAR <- matchedSTAR[2:187]
+```
+
+# Expression Analysis {.tabset .tabset-pills}
+
+## Correlation Analysis
+Similar to the Bowtie PE x Bowtie SE expression analysis, this begins by determining the correlation value for all of the genes between the two alignment methods for any given sample. 
+```{r Sample-correlation}
+SampleID <- c() #This will hold the sample id for each iteration of the loop
+pearsonSample <- c() #This will hold the pearson correlation coefficient for each iteration of the loop
+spearmanSample <- c()
+#this loop performs the above comparison for all of the samples
+#begins at 2 because the first row is the Gene ID and that is needed in every comparison
+for(i in 2:170) {
+  SamplePE <- dplyr::select(matchedPE, 1, all_of(i))
+  SampleSE <- dplyr::select(matchedSTAR, 1, all_of(i))
+  combined_holder <- left_join(SamplePE, SampleSE, by = "GeneID")
+  
+  #The following chunk prints out a comparison graph for every sample. I have it commented out because I have 185 samples and I don't need a graph for all of them. You are welcome to uncomment it but I only recommend that if you have a small number of samples or need to look at comparisons of specific samples.
+  
+  #print(ggplot(data = combined_holder, aes(x = (pull(combined_holder, 2)), y = (pull(combined_holder, 3)))) +
+  #  geom_point() +
+  #  labs(title = (colnames(SamplePE)[2]), y = "Single-End", x = "Paired-End") +
+  #  geom_smooth(method = "lm", se = FALSE) +
+  #  theme_pubr()
+
+  SampleID <- append(SampleID, colnames(SamplePE)[2]) #This adds the sample ID to a pre-made vector
+  pearson <- rcorr(pull(combined_holder, 2), pull(combined_holder, 3), type = "pearson") #determines the pearson correlation coefficient for this sample
+  spearman <- rcorr(pull(combined_holder, 2), pull(combined_holder, 3), type = "spearman")
+  pearsonSample <- append(pearsonSample, pearson$r[3]) #adds the pearson correlation coefficient to a pre-made vector
+  spearmanSample <- append(spearmanSample, spearman$r[3])
+}
+PearsonSample <- data.frame(SampleID, pearsonSample) #combines the previous two vectors into a data frame where each sample is associated with its correlation value
+SpearmanSample <- data.frame(SampleID, spearmanSample)
+
+summary(PearsonSample)
+summary(SpearmanSample)
+
+sampleextremes <- matrix(c(slice_min(PearsonSample, pearsonSample), slice_max(PearsonSample, pearsonSample), slice_min(SpearmanSample, spearmanSample), slice_max(SpearmanSample, spearmanSample)), ncol = 2)
+colnames(sampleextremes) <- c("Pearson", "Spearman")
+rownames(sampleextremes) <- c("Sample-min", "Minimum", "Sample-max", "Maximum")
+sampleextremes
+```
+
+The sample correlation analysis is followed by a gene correlation analysis, determining the correlation between samples between the two alignment methods for any given gene. 
+```{r Gene-correlation, echo = TRUE}
+pearsonGenes <- c() #This vector will get the pearson correlation coefficient for each iteration of the loop
+spearmanGenes <- c()
+GeneID <- c() #This vector will hold the gene IDs for each loop
+
+#This loop will perform the above comparison on all of the genes.
+for(i in 1:13064) {
+  GenePE <- dplyr::slice(matchedPE, i)
+  GenePE <- pivot_longer(data = GenePE,
+                         cols = -GeneID,
+                         names_to = "Sample",
+                         values_to = "PE")
+  GeneSE <- dplyr::slice(matchedSTAR, i)
+  GeneSE <- pivot_longer(data = GeneSE,
+                         cols = -GeneID,
+                         names_to = "Sample",
+                         values_to = "STAR")
+  name <- GenePE$GeneID[1]
+  Join_holder <- left_join(GenePE, GeneSE, by = c("Sample", "GeneID"))
+  Join_holder <- dplyr::select(Join_holder, 2:4)
+  Join_holder$STAR <- replace_na(Join_holder$STAR, 0)
+  
+  #The following will print off a comparison point graph for every gene. For me, that was upwards of 14,000 graphs so I wrote it but have it commented out. You are welcome to uncomment and print the graphs but it is my recommendation that you don't.
+  
+  #print(ggplot(data = Join_holder, aes(x = (pull(Join_holder, 2)), y = (pull(Join_holder, 3)))) +
+  #  geom_point() +
+  #  labs(title = name, x = "Paired-End", y = "Single-End") +
+  #  geom_smooth(method = "lm", se = FALSE) +
+  #  theme_pubr()
+
+  GeneID <- append(GeneID, name) #adding the gene name to a pre-made vector
+  peaGenes <- rcorr(pull(Join_holder, 2), pull(Join_holder, 3), type = "pearson") #determining the pearson correlation coefficient
+  pearsonGenes <- append(pearsonGenes, peaGenes$r[3]) #adding the correlation coefficient to a pre-made vector
+  spearGenes <- rcorr(pull(Join_holder, 2), pull(Join_holder, 3), type = "spearman")
+  spearmanGenes <- append(spearmanGenes, spearGenes$r[3])
+}
+PearsonGenes <- data.frame(GeneID, pearsonGenes) #combining the two previous vectors into one data frame
+SpearmanGenes <- data.frame(GeneID, spearmanGenes)
+
+summary(PearsonGenes)
+summary(SpearmanGenes)
+
+geneextremes <- matrix(c(slice_min(PearsonGenes, pearsonGenes), slice_max(PearsonGenes, pearsonGenes), slice_min(SpearmanGenes, spearmanGenes), slice_max(SpearmanGenes, spearmanGenes)), ncol = 2)
+colnames(geneextremes) <- c("Pearson", "Spearman")
+rownames(geneextremes) <- c("GeneID-min", "Minimum", "GeneID-max", "Maximum")
+geneextremes
+```
+
+With these correlation values, we can view them a few different ways. In this chunk we view the distribution for genes and samples individually. 
+```{r Correlation-trends}
+#Distribution of correlation coefficients of Sample analysis
+ggplot(PearsonSample, aes(x = pearsonSample), pty = "s") +
+  geom_histogram(binwidth = 0.01) +
+  labs(title = "Correlation Distribution - Sample", x = "Pearson Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+
+ggplot(SpearmanSample, aes(x = spearmanSample), pty = "s") +
+  geom_histogram(binwidth = 0.001) +
+  labs(title = "Correlation Distribution - Sample", x = "Spearman Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+
+#Distribution of correlation coefficients of gene analysis
+ggplot(PearsonGenes, aes(x = pearsonGenes), pty = "s") +
+  geom_histogram(binwidth = 0.01) +
+  labs(title = "Correlation Distribution - Gene", x = "Pearson Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+
+ggplot(SpearmanGenes, aes(x = spearmanGenes), pty = "s") +
+  geom_histogram(binwidth = 0.01) +
+  labs(title = "Correlation Distribution - Gene", x = "Spearman Correlation Coefficient", y = "Frequency") +
+  theme_pubr()
+```
+
+In this chunk we reorganize the data frames so that we can view the correlation distributions for both genes and samples together. 
+```{r}
+PearsonGenes %>%
+  mutate(Type = "Genes") %>%
+  rename(pearson = pearsonGenes) -> PearsonGenes
+PearsonSample %>%
+  mutate(Type = "Samples") %>%
+  rename(pearson = pearsonSample) -> PearsonSample
+
+AllPearson <- data.frame(Pearson = append(PearsonGenes$pearson, PearsonSample$pearson), Type = append(PearsonGenes$Type, PearsonSample$Type))
+
+ggplot(AllPearson, aes(x = Type, y = Pearson)) +
+  geom_violin() +
+  geom_boxplot(width = 0.05) +
+  theme_pubr(base_size = 18)
+```
+
+In this chunk we rename the current PearsonGenes data frame and load in the PearsonGenes data frame from the original expression analysis in order compare the Bowtie x STAR data against the Bowtie x Bowtie data. 
+```{r}
+BowtiexSTAR  <- PearsonGenes
+load(here("Comparisons", "PearsonGenes.RData"))
+BowtiexBowtie <- PearsonGenes
+```
+
+We can then used both pearson genes data frames to compare how well each alignment method (Bowtie SE or STAR SE) correlates to the Bowtie paired-end data.
+```{r}
+pearsons <- full_join(BowtiexSTAR, BowtiexBowtie, by = c("GeneID"))
+
+pearsons <- rename(pearsons, BxS = pearson.x)
+pearsons <- rename(pearsons, BxB = pearson.y)
+
+pearsons$BowtieXstar <- replace_na(pearsons$BxS, 0.0)
+pearsons$BowtiexBowtie <- replace_na(pearsons$BxB, 0.0)
+
+ggplot(pearsons, aes(x = BxS, y = BxB)) +
+  geom_point() +
+  #geom_smooth() +
+  theme_pubr(base_size = 18)
+```
+
+
+## Biotype Analysis
+
+The biotypes of each gene set can be determined to see if there is a difference in which biotypes one of the methods aligns to more or less.
+```{r}
+STARbiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = STARcounts$GeneID, mart = ensembl)
+PEbiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = PE$GeneID, mart = ensembl)
+```
+
+The biotype quantites for each biotype can be counted for both alignment methods and joined into one table to directly compare the quantities. 
+```{r}
+STARbioCount <- count(STARbiotypes, gene_biotype, name = "STAR")
+PEbioCount <- count(PEbiotypes, gene_biotype, name = "PE")
+
+full_join(STARbioCount, PEbioCount, by = "gene_biotype")
+```
+
+We can also count the quantites of biotypes within each category for the gene sets that are either shared by both alignment methods, as well as unqiue to each alignment method. 
+```{r}
+Matched <- inner_join(PE, STARcounts, by = c("GeneID"))
+MatchedBiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = Matched$GeneID, mart = ensembl)
+count(MatchedBiotypes, gene_biotype)
+
+UniquePE <- anti_join(PE, STARcounts, by = c("GeneID")) 
+UniquePEBiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = UniquePE$GeneID, mart = ensembl)
+count(UniquePEBiotypes, gene_biotype)
+
+UniqueSE <- anti_join(STARcounts, PE, by = c("GeneID"))
+UniqueSEBiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = UniqueSE$GeneID, mart = ensembl)
+count(UniqueSEBiotypes, gene_biotype)
+```
+
+# eQTL Analysis {.tabset .tabset-pills}
+
+Beginning eQTL analysis, we can create matched data sets (matched by gene id and peak chromosome and matched by the previous two and peak centimorgan) that allow us to compare which eQTLs are detected by both alignment methods.
+```{r}
+matchedPeaks <- inner_join(PEpeaks, SEpeaks, by = c("phenotype", "peak_chr"))
+ThreematchedPeaks <- inner_join(PEpeaks, SEpeaks, by = c("phenotype", "peak_chr", "peak_cM"))
+
+ggplot(matchedPeaks, aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  labs(title = "Matched Peak LOD Scores", x = "Bowtie PE", y = "STAR SE") +
+  geom_smooth(method = "lm") +
+  stat_regline_equation(label.x = 50, label.y = 28) +
+  stat_cor(label.x = 43, label.y = 24) +
+  theme_pubr() 
+
+ggplot(ThreematchedPeaks, aes(x = lod.x, y = lod.y)) +
+  geom_point() +
+  labs(title = "Three Factor Matched Peak LOD Scores",x = "Bowtie PE", y = "STAR SE") +
+  geom_smooth(method = "lm") +
+  stat_regline_equation() +
+  stat_cor(label.y = 50) +
+  theme_pubr() 
+
+matchedPeaks %>%
+  filter(peak_cM.x - peak_cM.y < 10 & peak_cM.x - peak_cM.y > -10) -> TenFilter
+
+matchedPeaks %>%
+  filter(peak_cM.x - peak_cM.y < 10 & peak_cM.x - peak_cM.y > -10) %>%
+  ggplot(aes(x = lod.x, y = lod.y)) +
+    geom_point() +
+    labs(title = "Matched Peak LOD Scores (cM filter 10)", x = "Bowtie PE", y = "STAR SE") +
+    geom_smooth(method = "lm") +
+    stat_regline_equation(label.x = 50, label.y = 28) +
+    stat_cor(label.x = 43, label.y = 24) +
+    theme_pubr()
+
+matchedPeaks %>%
+  filter(peak_cM.x - peak_cM.y < 5 & peak_cM.x - peak_cM.y > -5) -> FiveFilter
+
+matchedPeaks %>%
+  filter(peak_cM.x - peak_cM.y < 5 & peak_cM.x - peak_cM.y > -5) %>%
+  ggplot(aes(x = lod.x, y = lod.y)) +
+    geom_point() +
+    labs(title = "Matched Peak LOD Scores (cM filter 5)", x = "Bowtie PE", y = "STAR SE") +
+    geom_smooth(method = "lm") +
+    stat_regline_equation(label.x = 50, label.y = 28) +
+    stat_cor(label.x = 43, label.y = 24) +
+    theme_pubr()
+```
+
+We can also determine the biotypes of the outliers found in the previous chunk to see if there is enrichment of any specific biotype.
+```{r}
+FiveFilter %>%
+  filter(lod.x - lod.y > 10 | lod.y - lod.x > 10) -> lodOutliers
+FiveFilter %>%
+  filter(lod.x - lod.y > 10) -> BowtieOutliers
+FiveFilter %>%
+  filter(lod.y - lod.x > 10) -> STAROutliers
+
+BOutlierBios <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filter = 'ensembl_gene_id', values = BowtieOutliers$phenotype, mart = ensembl)
+count(BOutlierBios, gene_biotype)
+SOutlierBios <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filter = 'ensembl_gene_id', values = STAROutliers$phenotype, mart = ensembl)
+count(SOutlierBios, gene_biotype)
+```
+
+Another way to determine the enrichment is to use ggprofiler to find overrepresentation of any specific biotype. 
+```{r}
+OutlierOver <- gost(query = lodOutliers$phenotype, organism = "mmusculus", domain_scope = "custom", custom_bg = matchedPeaks$phenotype, evcodes = TRUE, significant = FALSE)
+
+#visualizing that data using the gostplot() function of gProfiler2
+gostplot(OutlierOver, capped = TRUE, interactive = TRUE)
+```
+
+In this chunk we determine the biotypes for the entire eQTL detection gene set. 
+```{r}
+PEBiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = PEpeaks$phenotype, mart = ensembl)
+SEBiotypes <- getBM(attributes = c('ensembl_gene_id', 'gene_biotype'), filters = 'ensembl_gene_id', values = SEpeaks$phenotype, mart = ensembl)
+```
+
+We can join the counts together for direct comparison as well as separate out the biotypes into the three major biotype categories.
+```{r}
+PEcounts <- count(PEBiotypes, gene_biotype, name = "PE")
+SEcounts <- count(SEBiotypes, gene_biotype, name = "SE")
+
+Biotypes <- full_join(PEcounts, SEcounts, by = "gene_biotype")
+
+pseudos <- filter(Biotypes, str_detect(Biotypes$gene_biotype, "pseudogene"))
+prots <- filter(Biotypes, str_detect(Biotypes$gene_biotype, "protein")) 
+rnas <- filter(Biotypes, str_detect(Biotypes$gene_biotype, "protein") == FALSE & str_detect(Biotypes$gene_biotype, "pseudogene") == FALSE)
+rnas$SE <- replace_na(rnas$SE, 0)
+```
+
+From those three categories, we can determine the quantity of genes that are pseudogenes, the quantity that are protein coding, and the quantity that are small RNAs. 
+```{r}
+pseudos %>%
+  add_row(gene_biotype = "Pseudogenes", PE = sum(pseudos$PE), SE = sum(pseudos$SE)) -> pseudos
+prots %>%
+  add_row(gene_biotype = "Protein Coding", PE = sum(prots$PE), SE = sum(prots$SE)) -> prots
+rnas %>%
+  add_row(gene_biotype = "Small RNAs", PE = sum(rnas$PE), SE = sum(rnas$SE)) -> rnas
+```
+
+We can then join these sums together and print as a table to see the variance between the Bowtie and STAR analysis. 
+```{r}
+BiotypeCats <- full_join(rnas[17,], pseudos[8,], by = c("gene_biotype", "PE", "SE"))
+BiotypeCats <- full_join(BiotypeCats, prots[2,], by = c("gene_biotype", "PE", "SE")) 
+BiotypeCats <- rename(BiotypeCats, Biotype = gene_biotype)
+BiotypeCats
+```
+
+We can also plot the gene midpoint by the QTL midpoint to see how many of our eQTLs are local or distal, as well as how many are overlapping between the two alignment methods. Here we prepare the data for plotting. 
+```{r Chromosome-comparison-plot}
+chroms <- c(as.character(1:19), "X") #creating a character vector of the chromosomes
+interp_bp <- function(df) { #input for this function is a data frame (must contain the peak chromosome and peak centimorgan)
+  df <- arrange(df, peak_chr, peak_cM) #arranging the peak chromosome and the peak centimorgan from the input data frame
+  peak_gpos <- dplyr::select(df, peak_chr, peak_cM) #isolating the peak chromosome and centimorgan
+  chr <- peak_gpos$peak_chr #isolating the peak chromosomes
+  f <- factor(chr, chroms) #factorizing the chromosomes
+  peak_gcoord_list <- split(peak_gpos$peak_cM, f) #splits the peak cM data based on the chromosomes
+  peak_pcoord_list <- qtl2::interp_map(peak_gcoord_list, gmap, pmap) #determines the actual bp location
+  df$interp_bp_peak <- unsplit(peak_pcoord_list, f) #unsplits the data into a new column
+  df #prints your new data frame
+}
+map_dat2 <- map_dat %>%
+  separate(marker, into=c('chrom', 'pos_bp'), convert=T, remove=F) %>%
+  mutate(n=1:n()) %>% as_tibble()
+
+PE_peaks <- interp_bp(PEpeaks)
+PE_location <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = PE_peaks$phenotype, mart = ensembl)
+PE_peaksXlocation <- inner_join(PE_peaks, PE_location, by = c("phenotype" = "ensembl_gene_id"))
+
+SE_peaks <- interp_bp(SEpeaks)
+SE_location <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = SE_peaks$phenotype, mart = ensembl)
+SE_peaksXlocation <- inner_join(SE_peaks, SE_location, by = c("phenotype" = "ensembl_gene_id"))
+
+MatchedPeaks <- inner_join(PE_peaksXlocation, SE_peaksXlocation, by = c("phenotype", "peak_chr", "start_position", "end_position", "chromosome_name", "interp_bp_peak"))
+USEPeaks <- anti_join(SE_peaksXlocation, PE_peaksXlocation, by = c("phenotype", "peak_chr"))
+UPEPeaks <- anti_join(PE_peaksXlocation, SE_peaksXlocation, by = c("phenotype", "peak_chr"))
+
+SharedUPE <- filter(UPEPeaks, UPEPeaks$phenotype %in% UniquePE$GeneID)
+DoubleUPE <- filter(UPEPeaks, !(UPEPeaks$phenotype %in% UniquePE$GeneID))
+
+SharedUSE <- filter(USEPeaks, USEPeaks$phenotype %in% UniqueSE$GeneID)
+DoubleUSE <- filter(USEPeaks, !(USEPeaks$phenotype %in% UniqueSE$GeneID))
+```
+
+We can then plot all of the data on the same graph to show where the overlap between the methods is as well as what is different betwen the two. 
+```{r QTL-map-plot}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes <- UPEPeaks %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  select(-same_chrom, -diff)
+all.genes$cumsum_bp_gene <- all.genes$midpoint + chrom_lens_offset[all.genes$chromosome]
+all.genes$cumsum_bp_peak <- all.genes$interp_bp_peak + chrom_lens_offset[all.genes$peak_chr]
+all.genes$cumsum_bp_gene <- ifelse(all.genes$local == TRUE, all.genes$cumsum_bp_gene + 30000000, all.genes$cumsum_bp_gene + 0)
+
+all.genes2 <- USEPeaks %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  select(-same_chrom, -diff)
+all.genes2$cumsum_bp_gene <- all.genes2$midpoint + chrom_lens_offset[all.genes2$chromosome]
+all.genes2$cumsum_bp_peak <- all.genes2$interp_bp_peak + chrom_lens_offset[all.genes2$peak_chr]
+all.genes2$cumsum_bp_gene <- ifelse(all.genes2$local == TRUE, all.genes2$cumsum_bp_gene - 30000000, all.genes2$cumsum_bp_gene + 0)
+
+all.genes3 <- MatchedPeaks %>% mutate(midpoint = (start_position + end_position) / 2)
+all.genes3$cumsum_bp_gene <- all.genes3$midpoint + chrom_lens_offset[all.genes3$chromosome]
+all.genes3$cumsum_bp_peak <- all.genes3$interp_bp_peak + chrom_lens_offset[all.genes3$peak_chr]
+
+qtl.colors <- c(rgb(238,106,88, max = 255), rgb(100,149,237, max = 255, alpha = 100))
+#qtl.colors <- alpha(qtl.colors, alpha = 0.5)
+
+par(mai = c(1, 1, 0.4, 1.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = qtl.colors[1], cex = 0.5)
+)
+with(
+  filter(all.genes2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = qtl.colors[2], cex = 0.5)
+)
+with(
+  filter(all.genes3, lod.x > 7.5 | lod.y > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = rgb(red = 166, green = 166, blue = 166, max = 255, alpha = 25), cex = 0.5)
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Matched","Bowtie PE", "STAR SE"), col = c(rgb(166,166,166, max = 255), "coral2", "cornflowerblue"), pch = 19, cex = 1.25, title = "Subset", bty = "n")
+```
+
+We can also plot them individually to show more clearly where each method is uniquely detecting eQTLs. 
+```{r}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes <- SharedUPE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes$cumsum_bp_gene <- all.genes$midpoint + chrom_lens_offset[all.genes$chromosome]
+all.genes$cumsum_bp_peak <- all.genes$interp_bp_peak + chrom_lens_offset[all.genes$peak_chr]
+all.genes1pt2 <- DoubleUPE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes1pt2$cumsum_bp_gene <- all.genes1pt2$midpoint + chrom_lens_offset[all.genes1pt2$chromosome]
+all.genes1pt2$cumsum_bp_peak <- all.genes1pt2$interp_bp_peak + chrom_lens_offset[all.genes1pt2$peak_chr]
+all.genes1pt2$cumsum_bp_gene <- ifelse(all.genes1pt2$local == TRUE, all.genes1pt2$cumsum_bp_gene - 30000000, all.genes1pt2$cumsum_bp_gene + 0)
+
+par(mai = c(1, 1, 0.4, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes1pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "coral2")
+)
+
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin PE and SE", "Gene expressed\nin PE only"), col = c("gray19", "coral2"), pch = 19, cex = 1.5, bty = "n")
+
+
+
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+
+all.genes2 <- SharedUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2$cumsum_bp_gene <- all.genes2$midpoint + chrom_lens_offset[all.genes2$chromosome]
+all.genes2$cumsum_bp_peak <- all.genes2$interp_bp_peak + chrom_lens_offset[all.genes2$peak_chr]
+all.genes2pt2 <- DoubleUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2pt2$cumsum_bp_gene <- all.genes2pt2$midpoint + chrom_lens_offset[all.genes2pt2$chromosome]
+all.genes2pt2$cumsum_bp_peak <- all.genes2pt2$interp_bp_peak + chrom_lens_offset[all.genes2pt2$peak_chr]
+all.genes2pt2$cumsum_bp_gene <- ifelse(all.genes2pt2$local == TRUE, all.genes2pt2$cumsum_bp_gene - 30000000, all.genes2pt2$cumsum_bp_gene + 0)
+
+par(mai = c(1, 1, 0.4, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes2, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes2pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "cornflowerblue")
+)
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin PE and SE", "Gene expressed\nin SE only"), col = c("gray19", "cornflowerblue"), pch = 19, cex = 1.5, bty = "n")
+
+
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+
+all.genes3 <- MatchedPeaks %>% mutate(midpoint = (start_position + end_position) / 2)
+all.genes3$cumsum_bp_gene <- all.genes3$midpoint + chrom_lens_offset[all.genes3$chromosome]
+all.genes3$cumsum_bp_peak <- all.genes3$interp_bp_peak + chrom_lens_offset[all.genes3$peak_chr]
+
+par(mai = c(1, 1, 0.4, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+
+with(
+  filter(all.genes3, lod.x > 7.5 | lod.y > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = rgb(red = 166, green = 166, blue = 166, max = 255))
+)
+
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+
+```
+
+We can also load the eQTLs detected by the single-end data aligned by Bowtie and quantified by emase to compare it to the eQTLs detected by the STAR output. 
+```{r}
+load(here("MappingScripts", "DO_mESC_eQTL_peaks.RData"))
+BSEpeaks <- peaks #renaming peaks to specify sequencing method
+SEcmd <- cmd
+SEDatacmd <- DO185_mESC_emase_m4.cmd
+rm(peaks, cmd, DO185_mESC_emase_m4.cmd)
+
+#Unique Single-End Total
+SEpeaksbp <- interp_bp(BSEpeaks) #cM to bp conversion
+SEstart_end <- getBM(attributes = c('ensembl_gene_id', 'start_position', 'end_position', 'chromosome_name'), filters = 'ensembl_gene_id', values = SEpeaksbp$phenotype, mart = ensembl) #start/end acquisition
+SEpeaksXlocation <- inner_join(SEpeaksbp, SEstart_end, by = c("phenotype" = "ensembl_gene_id")) #adding start/end to data
+SEpeaksXlocation$chromosome_name <- factor(SEpeaksXlocation$chromosome_name, levels = c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"X")) #factorizing
+
+matchesSEs <- inner_join(SE_peaksXlocation, SEpeaksXlocation, by = c("phenotype", "peak_chr", "start_position", "end_position", "chromosome_name", "interp_bp_peak"))
+
+USTARSE <- anti_join(SE_peaksXlocation, SEpeaksXlocation, by = c("phenotype", "peak_chr")) 
+UBowtieSE <- anti_join(SEpeaksXlocation, SE_peaksXlocation, by = c("phenotype", "peak_chr")) 
+
+USTARSEexp <- anti_join(STARcounts, SE, by = "GeneID")
+UBowtieSEexp <- anti_join(SE, STARcounts, by = "GeneID")
+
+SharedUSTAR <- filter(USTARSE, USTARSE$phenotype %in% USTARSEexp$GeneID)
+DoubleUSTAR <- filter(USTARSE, !(USTARSE$phenotype %in% USTARSEexp$GeneID))
+
+SharedUBowtie <- filter(UBowtieSE, UBowtieSE$phenotype %in% UBowtieSEexp$GeneID)
+DoubleUBowtie <- filter(UBowtieSE, !(UBowtieSE$phenotype %in% UBowtieSEexp$GeneID))
+```
+
+We can then plot the data individually to show the differneces between the eQTLs detected for the single-end data for each alignment method. 
+```{r}
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes <- SharedUSTAR %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes$cumsum_bp_gene <- all.genes$midpoint + chrom_lens_offset[all.genes$chromosome]
+all.genes$cumsum_bp_peak <- all.genes$interp_bp_peak + chrom_lens_offset[all.genes$peak_chr]
+all.genes1pt2 <- DoubleUSTAR %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes1pt2$cumsum_bp_gene <- all.genes1pt2$midpoint + chrom_lens_offset[all.genes1pt2$chromosome]
+all.genes1pt2$cumsum_bp_peak <- all.genes1pt2$interp_bp_peak + chrom_lens_offset[all.genes1pt2$peak_chr]
+all.genes1pt2$cumsum_bp_gene <- ifelse(all.genes1pt2$local == TRUE, all.genes1pt2$cumsum_bp_gene - 30000000, all.genes1pt2$cumsum_bp_gene + 0)
+
+par(mai = c(1, 1, 0.4, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes1pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "cornflowerblue")
+)
+
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin STAR and\nBowtie", "Gene expressed\nin STAR only"), col = c("gray19", "cornflowerblue"), pch = 19, cex = 1.5, bty = "n")
+
+
+
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+all.genes2 <- SharedUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2$cumsum_bp_gene <- all.genes2$midpoint + chrom_lens_offset[all.genes2$chromosome]
+all.genes2$cumsum_bp_peak <- all.genes2$interp_bp_peak + chrom_lens_offset[all.genes2$peak_chr]
+all.genes2pt2 <- DoubleUSE %>% 
+  mutate(midpoint = (start_position + end_position) / 2) %>% 
+  mutate( same_chrom =  (peak_chr == chromosome_name), diff = abs(midpoint - interp_bp_peak)) %>% 
+  mutate( local = ifelse( same_chrom & diff < 10e06, TRUE, FALSE)) %>% 
+  dplyr::select(-same_chrom, -diff)
+all.genes2pt2$cumsum_bp_gene <- all.genes2pt2$midpoint + chrom_lens_offset[all.genes2pt2$chromosome]
+all.genes2pt2$cumsum_bp_peak <- all.genes2pt2$interp_bp_peak + chrom_lens_offset[all.genes2pt2$peak_chr]
+all.genes2pt2$cumsum_bp_gene <- ifelse(all.genes2pt2$local == TRUE, all.genes2pt2$cumsum_bp_gene - 30000000, all.genes2pt2$cumsum_bp_gene + 0)
+
+par(mai = c(1, 1, 0.4, 2.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+with(
+  filter(all.genes2, lod > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = "gray19")
+)
+with(
+  filter(all.genes2pt2, lod > 7.5),
+  points(cumsum_bp_peak,cumsum_bp_gene,
+         pch = 19, col = "cyan3")
+)
+
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+legend("right", inset = c(-0.25, 0), c("Gene expressed\nin STAR and\nBowtie", "Gene expressed\nin Bowtie only"), col = c("gray19", "cyan3"), pch = 19, cex = 1.5, bty = "n")
+
+
+uchr <- c(as.character(1:19), "X")
+cl <- dplyr::select(map_dat2, chr, pos_bp) %>%
+  group_by(chr) %>%
+  dplyr::summarize(len = max(pos_bp))
+clp <- with(cl, setNames(len, chr))
+chrom_lens <- setNames(as.numeric(clp[uchr]), uchr)
+chrom_lens_offset <- cumsum(chrom_lens) - chrom_lens
+chrom_lens_midpt <- chrom_lens_offset + chrom_lens / 2
+
+all.genes3 <- matchesSEs %>% mutate(midpoint = (start_position + end_position) / 2)
+all.genes3$cumsum_bp_gene <- all.genes3$midpoint + chrom_lens_offset[all.genes3$chromosome]
+all.genes3$cumsum_bp_peak <- all.genes3$interp_bp_peak + chrom_lens_offset[all.genes3$peak_chr]
+
+par(mai = c(1, 1, 0.4, 1.5), xpd = TRUE)
+with(
+  filter(all.genes, lod > 7.5),
+  plot(cumsum_bp_peak, cumsum_bp_gene, 
+    type = "n", xlab = "", ylab = "", axes = F
+  )
+)
+nn <- sum(chrom_lens)
+for (cnum in seq(1, 19, by = 2)) {
+  rect(chrom_lens_offset[cnum], 0, chrom_lens_offset[cnum + 1], nn,
+    col = rgb(240, 240, 240, max = 255), border = NA
+  )
+}
+
+with(
+  filter(all.genes3, lod.x > 7.5 | lod.y > 7.5),
+  points(cumsum_bp_peak, cumsum_bp_gene,
+         pch = 19, col = rgb(red = 166, green = 166, blue = 166, max = 255))
+)
+
+sz <- 1.0
+axis(1, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("QTL location", 1, line = 3.2, cex = 2)
+axis(2, at = chrom_lens_midpt, labels = names(chrom_lens), las = 2, cex.axis = sz)
+mtext("Gene location", 2, line = 2.5, cex = 2)
+```
+
+
+
+
