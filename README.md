@@ -13,6 +13,13 @@ SideComparisons: This just a few smaller comparisons completed throughout the pr
 
 The files are the actual R project, as well as a few things to make the project work
 
-If you have any questions about any of the code found in these documents please contact the author Sam Ardery at sardery@outlook.com
+If you have any questions about any of the code found in these documents or you need any of the following RData files, please contact the author Sam Ardery at sardery@outlook.com
+
+PEMappingData
+SEMappingData
+DO185_mESC_emase_m4_20182419
+STAR_SEforMapping
+TruePEforMapping
+DO185_mESC_emase_m4_noProbs_correctedIDs_02012021
 
 While writing this read me I was listening to Lola Montez and Dagen For by Volbeat. Solid song. 
